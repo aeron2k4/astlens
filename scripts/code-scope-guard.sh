@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # PreToolUse guard installed by code-scope-mcp (scripts/install-claude.sh), so
 # Claude uses the code-scope MCP tools for source code:
-# - Read: deny whole-file reads of source files. A Read with a limit of at
+# - Read: deny whole-file reads of source files inside the working directory.
+#   Files elsewhere, such as dependency sources, can be read. A Read with a limit of at
 #   most $CODE_SCOPE_MAX_READ_LINES lines (default 300) is still allowed,
 #   since Edit needs a prior Read.
 # - Grep, and grep/egrep/fgrep/ugrep/rg/git grep in Bash: deny searches that may
@@ -270,6 +271,7 @@ case "$tool" in
     f=$(jq -r '.tool_input.file_path // empty' <<<"$input")
     limit=$(jq -r '.tool_input.limit // empty' <<<"$input")
     [[ "$f" =~ $CODE_EXT ]] || exit 0
+    inside_workspace "$(absolute "$f" "$cwd")" || exit 0
     max=${CODE_SCOPE_MAX_READ_LINES:-300}
     [[ "$max" =~ ^[0-9]+$ ]] || max=300
     # Without a limit, Read returns up to 2000 lines even from an offset.

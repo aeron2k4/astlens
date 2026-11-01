@@ -91,7 +91,7 @@ It does three things, all at user scope so they apply to every project:
    With no root argument the server uses the session's working directory.
 2. Add a `PreToolUse` hook (`~/.claude/hooks/code-scope-guard.sh`, wired in
    `~/.claude/settings.json`) that points Claude to the code-scope tools:
-   - denies whole-file `Read` of source files in the supported languages; a
+   - denies whole-file `Read` of source files in the session's workspace; a
      `Read` with a `limit` of at most 300 lines (`CODE_SCOPE_MAX_READ_LINES`)
      is still allowed, because `Edit` needs a prior `Read`;
    - denies searches that may cover those files inside the session's
