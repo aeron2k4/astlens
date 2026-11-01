@@ -70,7 +70,6 @@ jobs:
           mkdir "$name"
           cp target/${{ matrix.target }}/release/code-scope-mcp README.md LICENSE-MIT LICENSE-APACHE "$name/"
           tar -czf "$name.tar.gz" "$name"
-          shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -79,15 +78,13 @@ jobs:
           New-Item -ItemType Directory $name | Out-Null
           Copy-Item target/${{ matrix.target }}/release/code-scope-mcp.exe, README.md, LICENSE-MIT, LICENSE-APACHE $name
           Compress-Archive -Path $name -DestinationPath "$name.zip"
-          $hash = (Get-FileHash "$name.zip" -Algorithm SHA256).Hash.ToLower()
-          "$hash  $name.zip" | Out-File -Encoding ascii -NoNewline "$name.zip.sha256"
 
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.target }}
           path: |
-            code-scope-mcp-*.tar.gz*
-            code-scope-mcp-*.zip*
+            code-scope-mcp-*.tar.gz
+            code-scope-mcp-*.zip
           if-no-files-found: error
 
   release:
@@ -100,6 +97,9 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      # One checksum file for all archives: `sha256sum -c SHA256SUMS`.
+      - name: Checksums
+        run: cd dist && sha256sum code-scope-mcp-* > SHA256SUMS
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}

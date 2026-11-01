@@ -75,8 +75,9 @@ Full results for Go, CPython and tokio are in [`BENCHMARKS.md`](BENCHMARKS.md).
 
 Prebuilt binaries for Linux (x86_64, aarch64), macOS (Apple Silicon, Intel)
 and Windows (x86_64) are attached to each
-[release](https://github.com/aeron2k4/code-scope-mcp/releases), with a
-SHA-256 checksum per archive. Or build from source:
+[release](https://github.com/aeron2k4/code-scope-mcp/releases), with their
+SHA-256 checksums in `SHA256SUMS` (`sha256sum -c --ignore-missing SHA256SUMS`).
+Or build from source:
 
 ```sh
 cargo build --release
