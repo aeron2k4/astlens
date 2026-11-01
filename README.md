@@ -73,6 +73,11 @@ Full results for Go, CPython and tokio are in [`BENCHMARKS.md`](BENCHMARKS.md).
 
 ## Usage
 
+Prebuilt binaries for Linux (x86_64, aarch64), macOS (Apple Silicon, Intel)
+and Windows (x86_64) are attached to each
+[release](https://github.com/aeron2k4/code-scope-mcp/releases), with a
+SHA-256 checksum per archive. Or build from source:
+
 ```sh
 cargo build --release
 ./target/release/code-scope-mcp /path/to/project   # or $CODE_SCOPE_ROOT, or the cwd
@@ -123,6 +128,18 @@ To register manually instead:
 claude mcp add-json code-scope \
   '{"type": "stdio", "command": "/abs/path/to/code-scope-mcp", "args": ["/path/to/project"], "alwaysLoad": true}'
 ```
+
+## Releasing
+
+Bump `version` in `Cargo.toml`, commit, then push a matching tag:
+
+```sh
+git tag -a v0.2.0 -m "code-scope-mcp 0.2.0"
+git push origin v0.2.0
+```
+
+The release workflow checks that the tag matches `Cargo.toml`, builds the five
+targets and publishes a GitHub Release with generated notes.
 
 ## Development
 
