@@ -14,6 +14,17 @@ use crate::ast::parser::{Lang, Symbol, SymbolKind};
 use crate::git;
 use cache::ParseCache;
 
+/// `path` with `/` separators on every platform, so tool output and the
+/// paths a client sends back look the same on Windows.
+pub fn slash_path(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    if std::path::MAIN_SEPARATOR == '/' {
+        text.into_owned()
+    } else {
+        text.replace(std::path::MAIN_SEPARATOR, "/")
+    }
+}
+
 /// Longest line excerpt returned by reference and text search.
 const MAX_EXCERPT_CHARS: usize = 200;
 /// Default upper bound on files walked, to keep huge repositories responsive.
@@ -179,7 +190,7 @@ pub fn search_symbols(
             let qualified = sym.qualified_name();
             if let Some(score) = score(query, &query_lower, &sym.name, &qualified) {
                 local.push(SymbolHit {
-                    path: rel.to_string_lossy().into_owned(),
+                    path: slash_path(rel),
                     name: sym.name.clone(),
                     qualified_name: qualified,
                     kind: sym.kind,

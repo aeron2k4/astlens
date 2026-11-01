@@ -98,10 +98,8 @@ impl Workspace {
         Ok(path)
     }
 
-    fn display<'a>(&self, path: &'a Path) -> std::borrow::Cow<'a, str> {
-        path.strip_prefix(&self.root)
-            .unwrap_or(path)
-            .to_string_lossy()
+    fn display(&self, path: &Path) -> String {
+        index::slash_path(path.strip_prefix(&self.root).unwrap_or(path))
     }
 
     pub fn outline(&self, rel: &str, max_depth: Option<usize>) -> Result<String> {
@@ -1321,8 +1319,16 @@ mod tests {
 
     #[test]
     fn rejects_paths_outside_root() {
-        let (_dir, ws) = workspace();
-        let err = ws.outline("../../../../etc/passwd", None).unwrap_err();
-        assert!(err.to_string().contains("escapes the workspace root"));
+        let (dir, ws) = workspace();
+        // A real file next to the workspace, so the path resolves on every OS.
+        let outside = tempfile::NamedTempFile::new_in(dir.path().parent().unwrap()).unwrap();
+        let name = outside.path().file_name().unwrap().to_string_lossy();
+        let err = ws.outline(&format!("../{name}"), None).unwrap_err();
+        assert!(
+            err.to_string().contains("escapes the workspace root"),
+            "{err}"
+        );
+        let err = ws.outline("../no-such-file.rs", None).unwrap_err();
+        assert!(err.to_string().contains("no such path"), "{err}");
     }
 }

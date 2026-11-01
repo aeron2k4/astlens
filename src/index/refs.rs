@@ -5,7 +5,9 @@ use std::path::Path;
 use serde::Serialize;
 
 use super::cache::ParseCache;
-use super::{DEFAULT_MAX_FILES, Found, enclosing_symbol, files_under, line_excerpt, par_flat_map};
+use super::{
+    DEFAULT_MAX_FILES, Found, enclosing_symbol, files_under, line_excerpt, par_flat_map, slash_path,
+};
 use crate::ast::parser::{self, Lang, SymbolKind};
 
 #[derive(Debug, Clone, Serialize)]
@@ -206,7 +208,7 @@ pub fn find_references(
                 }
                 Some(Candidate {
                     hit: RefHit {
-                        path: rel.to_string_lossy().into_owned(),
+                        path: slash_path(rel),
                         line: o.line,
                         column: o.column,
                         text: line_excerpt(&file.source, o.start_byte),

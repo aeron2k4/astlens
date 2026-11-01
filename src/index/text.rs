@@ -6,7 +6,9 @@ use regex::Regex;
 use serde::Serialize;
 
 use super::cache::ParseCache;
-use super::{DEFAULT_MAX_FILES, Found, enclosing_symbol, files_under, line_excerpt, par_flat_map};
+use super::{
+    DEFAULT_MAX_FILES, Found, enclosing_symbol, files_under, line_excerpt, par_flat_map, slash_path,
+};
 use crate::ast::parser::Lang;
 
 /// Files larger than this are skipped (same bound as the parse cache).
@@ -71,7 +73,7 @@ pub fn search_text(
 
         // Symbols only for source files that matched, so the walk stays cheap.
         let parsed = Lang::from_path(rel).and_then(|_| cache.get(&abs).ok());
-        let path = rel.to_string_lossy().into_owned();
+        let path = slash_path(rel);
         starts
             .into_iter()
             .map(|(line, byte)| TextHit {
