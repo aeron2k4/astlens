@@ -62,29 +62,20 @@ jobs:
           key: ${{ matrix.target }}
       - run: cargo build --release --locked --target ${{ matrix.target }}
 
-      - name: Package (Unix)
-        if: runner.os != 'Windows'
+      # Ship the bare executable, named by target and without the version, so
+      # releases/latest/download/code-scope-mcp-<target> is a stable URL.
+      - name: Name binary
         shell: bash
         run: |
-          name=code-scope-mcp-$TAG-${{ matrix.target }}
-          mkdir "$name"
-          cp target/${{ matrix.target }}/release/code-scope-mcp README.md LICENSE-MIT LICENSE-APACHE "$name/"
-          tar -czf "$name.tar.gz" "$name"
-      - name: Package (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $name = "code-scope-mcp-$env:TAG-${{ matrix.target }}"
-          New-Item -ItemType Directory $name | Out-Null
-          Copy-Item target/${{ matrix.target }}/release/code-scope-mcp.exe, README.md, LICENSE-MIT, LICENSE-APACHE $name
-          Compress-Archive -Path $name -DestinationPath "$name.zip"
+          ext=""
+          if [ "$RUNNER_OS" = Windows ]; then ext=.exe; fi
+          cp "target/${{ matrix.target }}/release/code-scope-mcp$ext" \
+            "code-scope-mcp-${{ matrix.target }}$ext"
 
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.target }}
-          path: |
-            code-scope-mcp-*.tar.gz
-            code-scope-mcp-*.zip
+          path: code-scope-mcp-${{ matrix.target }}*
           if-no-files-found: error
 
   release:
@@ -97,7 +88,7 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-      # One checksum file for all archives: `sha256sum -c SHA256SUMS`.
+      # One checksum file for all binaries: `sha256sum -c SHA256SUMS`.
       - name: Checksums
         run: cd dist && sha256sum code-scope-mcp-* > SHA256SUMS
       - name: Publish GitHub Release
