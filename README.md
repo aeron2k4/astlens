@@ -73,8 +73,8 @@ Full results for Go, CPython and tokio are in [`BENCHMARKS.md`](BENCHMARKS.md).
 
 ## Usage
 
-Prebuilt binaries for Linux (x86_64, aarch64), macOS (Apple Silicon, Intel)
-and Windows (x86_64) are attached to each
+Prebuilt binaries for Linux (x86_64), macOS (Apple Silicon) and Windows
+(x86_64) are attached to each
 [release](https://github.com/aeron2k4/code-scope-mcp/releases), named by
 target, with their SHA-256 checksums in `SHA256SUMS`. For example, on Linux
 x86_64:
@@ -85,10 +85,10 @@ curl -fLo ~/.local/bin/code-scope-mcp \
 chmod +x ~/.local/bin/code-scope-mcp
 ```
 
-Other targets: `aarch64-unknown-linux-gnu`, `aarch64-apple-darwin`,
-`x86_64-apple-darwin`, `x86_64-pc-windows-msvc.exe`. On macOS, a binary
-downloaded by a browser also needs
-`xattr -d com.apple.quarantine code-scope-mcp`.
+The other binaries are `code-scope-mcp-aarch64-apple-darwin` and
+`code-scope-mcp-x86_64-pc-windows-msvc.exe`. On macOS, a binary downloaded by
+a browser also needs `xattr -d com.apple.quarantine code-scope-mcp`. Other
+platforms (Linux ARM, Intel macOS) can build from source.
 
 Or build from source:
 
@@ -152,7 +152,7 @@ git tag -a v0.2.0 -m "code-scope-mcp 0.2.0"
 git push origin v0.2.0
 ```
 
-The release workflow checks that the tag matches `Cargo.toml`, builds the five
+The release workflow checks that the tag matches `Cargo.toml`, builds the three
 targets and publishes their binaries and `SHA256SUMS` as a GitHub Release with
 generated notes.
 
