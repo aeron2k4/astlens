@@ -204,6 +204,94 @@ async fn mcp_session_over_jsonrpc() {
     assert_eq!(invalid["result"]["isError"], true);
     assert!(tool_text(&invalid).contains("missing field `query`"));
 
+    // Editing tools write through the protocol and show up in later reads.
+    let inserted = client
+        .call(
+            11,
+            "tools/call",
+            json!({"name": "insert_symbol", "arguments": {
+                "path": "app.py",
+                "after": "App::run",
+                "new_source": "    def stop(self):\n        return 0\n"
+            }}),
+        )
+        .await;
+    assert_ne!(inserted["result"]["isError"], true, "{inserted}");
+    assert_eq!(
+        tool_text(&inserted),
+        "inserted 2 lines after App::run in app.py, starting at line 5\n"
+    );
+    let stop = client
+        .call(
+            12,
+            "tools/call",
+            json!({"name": "read_symbol", "arguments": {"path": "app.py", "name": "App::stop"}}),
+        )
+        .await;
+    assert_eq!(
+        tool_text(&stop),
+        "// app.py:5-6 [method] App::stop\n5\t    def stop(self):\n6\t        return 0\n"
+    );
+
+    // Edit failures are tool errors and leave the file untouched.
+    let before = fs::read_to_string(dir.path().join("app.py")).unwrap();
+    let cases = [
+        (
+            json!({"name": "insert_symbol", "arguments": {
+                "path": "app.py", "after": "App::run", "before": "App::stop", "new_source": "x = 1"
+            }}),
+            "pass `after` or `before`, not both",
+        ),
+        (
+            json!({"name": "insert_symbol", "arguments": {"path": "app.py", "new_source": "def broken(:"}}),
+            "has syntax errors",
+        ),
+        (
+            json!({"name": "replace_symbol", "arguments": {"path": "app.py", "name": "App::run"}}),
+            "missing field `new_source`",
+        ),
+        (
+            json!({"name": "replace_symbol", "arguments": {
+                "path": "../outside.py", "name": "f", "new_source": ""
+            }}),
+            "no such path",
+        ),
+        (
+            json!({"name": "search_symbols", "arguments": {"query": "run", "limit": "ten"}}),
+            "invalid type",
+        ),
+        // The fixture is not a git repository.
+        (
+            json!({"name": "changed_symbols", "arguments": {}}),
+            "git diff failed",
+        ),
+    ];
+    for (id, (params, expected)) in (13..).zip(cases) {
+        let resp = client.call(id, "tools/call", params.clone()).await;
+        assert_eq!(resp["result"]["isError"], true, "{params}: {resp}");
+        assert!(
+            tool_text(&resp).contains(expected),
+            "{params}: {}",
+            tool_text(&resp)
+        );
+    }
+    assert_eq!(
+        fs::read_to_string(dir.path().join("app.py")).unwrap(),
+        before
+    );
+
+    // Protocol-level mistakes are JSON-RPC errors, not tool results.
+    let unknown_tool = client
+        .call(
+            30,
+            "tools/call",
+            json!({"name": "no_such_tool", "arguments": {}}),
+        )
+        .await;
+    assert!(unknown_tool["error"].is_object(), "{unknown_tool}");
+    let unknown_method = client.call(31, "no/such/method", json!({})).await;
+    assert_eq!(unknown_method["error"]["code"], -32601, "{unknown_method}");
+
     drop(client);
     handle.await.unwrap();
 }
