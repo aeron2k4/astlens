@@ -173,21 +173,19 @@ impl Workspace {
         }
         let mut out = String::new();
         for sym in matches.iter().take(MAX_SYMBOL_MATCHES) {
+            let start = symbol_start(&file.parsed, &file.source, sym);
+            let first_line = line_number(&file.source, start);
             let _ = writeln!(
                 out,
                 "// {}:{}-{} [{}] {}",
                 self.display(&path),
-                sym.start_line,
+                first_line,
                 sym.end_line,
                 sym.kind.as_str(),
                 sym.qualified_name()
             );
-            // Start at the beginning of the line so indentation is preserved.
-            let line_start = file.source[..sym.start_byte]
-                .rfind('\n')
-                .map_or(0, |i| i + 1);
-            for (i, line) in file.source[line_start..sym.end_byte].lines().enumerate() {
-                let _ = writeln!(out, "{}\t{line}", sym.start_line + i);
+            for (i, line) in file.source[start..sym.end_byte].lines().enumerate() {
+                let _ = writeln!(out, "{}\t{line}", first_line + i);
             }
         }
         if matches.len() > MAX_SYMBOL_MATCHES {
@@ -201,8 +199,9 @@ impl Workspace {
     }
 
     /// Replace the source of one symbol with `new_source`, which covers the
-    /// same lines `read_symbol` shows (from the start of the first line,
-    /// indentation included; empty deletes the symbol). `line` picks one of
+    /// same lines `read_symbol` shows (from the start of the first line, with
+    /// doc comments, attributes and decorators directly above and indentation
+    /// included; empty deletes the symbol). `line` picks one of
     /// several symbols sharing the name. The file is re-read rather than
     /// taken from the cache, and the write is refused if it would introduce
     /// syntax errors.
@@ -217,11 +216,15 @@ impl Workspace {
         let (source, parsed) = self.read_fresh(&path)?;
         let sym = unique_symbol(&parsed, rel, name, line)?;
 
-        let line_start = line_start(&source, sym.start_byte);
-        let replacement = new_source.trim_end_matches(['\n', '\r']);
+        let start = symbol_start(&parsed, &source, sym);
+        let first_line = line_number(&source, start);
+        let replacement = with_line_ending(
+            new_source.trim_end_matches(['\n', '\r']),
+            line_ending(&source),
+        );
         let updated = format!(
             "{}{replacement}{}",
-            &source[..line_start],
+            &source[..start],
             &source[sym.end_byte..]
         );
         self.write_checked(&path, &parsed, &updated, || {
@@ -238,10 +241,10 @@ impl Workspace {
             sym.qualified_name(),
             sym.kind.as_str(),
             self.display(&path),
-            sym.start_line,
+            first_line,
             sym.end_line,
             new_lines,
-            sym.start_line
+            first_line
         ))
     }
 
@@ -277,7 +280,7 @@ impl Workspace {
             }
             Some(Anchor::Before(name)) => {
                 let sym = unique_symbol(&parsed, rel, name, line)?;
-                let pos = attached_start(parsed.lang, &source, line_start(&source, sym.start_byte));
+                let pos = symbol_start(&parsed, &source, sym);
                 (
                     pos,
                     format!("{body}\n\n"),
@@ -297,14 +300,16 @@ impl Workspace {
                 )
             }
         };
+        let text = with_line_ending(&text, line_ending(&source));
         let updated = format!("{}{text}{}", &source[..pos], &source[pos..]);
         self.write_checked(&path, &parsed, &updated, || {
             "the inserted source".to_string()
         })?;
 
         // Leading newlines of `text` are separators, not inserted code.
-        let blank = text.len() - text.trim_start_matches('\n').len();
-        let first_line = source[..pos].matches('\n').count() + 1 + blank;
+        let code = text.trim_start_matches(['\r', '\n']);
+        let blank = text[..text.len() - code.len()].matches('\n').count();
+        let first_line = line_number(&source, pos) + blank;
         Ok(format!(
             "inserted {} lines {place} in {}, starting at line {first_line}\n",
             body.lines().count(),
@@ -332,7 +337,7 @@ impl Workspace {
         if reparsed.has_errors && !original.has_errors {
             bail!("not written: {} has syntax errors", what());
         }
-        std::fs::write(path, updated)
+        write_atomic(path, updated)
             .with_context(|| format!("cannot write {}", self.display(path)))?;
         self.cache.invalidate(path);
         Ok(())
@@ -537,6 +542,76 @@ fn line_start(source: &str, byte: usize) -> usize {
     source[..byte].rfind('\n').map_or(0, |i| i + 1)
 }
 
+/// 1-based line number of `byte`.
+fn line_number(source: &str, byte: usize) -> usize {
+    source[..byte].matches('\n').count() + 1
+}
+
+/// Where the lines of `sym` begin: the start of its first line, moved up
+/// over the doc comments, attributes and decorators directly above it, but
+/// never into the lines of a symbol that ends before it.
+fn symbol_start(parsed: &ParsedFile, source: &str, sym: &Symbol) -> usize {
+    let floor = parsed
+        .symbols
+        .iter()
+        .filter(|s| s.end_byte <= sym.start_byte)
+        .map(|s| s.end_byte)
+        .max()
+        .map_or(0, |end| {
+            source[end..]
+                .find('\n')
+                .map_or(source.len(), |i| end + i + 1)
+        });
+    attached_start(parsed.lang, source, line_start(source, sym.start_byte)).max(floor)
+}
+
+/// `\r\n` when the file already uses it, so edits keep its line endings.
+fn line_ending(source: &str) -> &'static str {
+    if source.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    }
+}
+
+fn with_line_ending(text: &str, eol: &str) -> String {
+    let text = text.replace("\r\n", "\n");
+    if eol == "\n" {
+        text
+    } else {
+        text.replace('\n', eol)
+    }
+}
+
+/// Replace `path` with `contents` through a temporary file in the same
+/// directory and a rename, so an interrupted write never leaves it half
+/// written. The original permissions are kept.
+fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
+    use std::io::Write as _;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let tmp = dir.join(format!(
+        ".{name}.code-scope-{}-{}.tmp",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let permissions = std::fs::metadata(path)?.permissions();
+    let result = (|| {
+        let mut file = std::fs::File::create_new(&tmp)?;
+        file.write_all(contents.as_bytes())?;
+        file.sync_all()?;
+        std::fs::set_permissions(&tmp, permissions)?;
+        std::fs::rename(&tmp, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
+}
+
 /// Move `start` (a line start) up over the comment, attribute and decorator
 /// lines directly above it, so code inserted there does not split them from
 /// the definition they belong to.
@@ -546,7 +621,7 @@ fn attached_start(lang: Lang, source: &str, mut start: usize) -> usize {
         let text = source[prev..start].trim();
         let attached = match lang {
             Lang::Python => text.starts_with('#') || text.starts_with('@'),
-            _ => ["//", "/*", "*", "#[", "#![", "@", "["]
+            _ => ["//", "/*", "*", "#[", "@", "["]
                 .iter()
                 .any(|p| text.starts_with(p)),
         };
@@ -1106,6 +1181,72 @@ mod tests {
                 .unwrap()
                 .ends_with(note)
         );
+    }
+
+    #[test]
+    fn symbol_lines_include_doc_comments_and_attributes() {
+        let (dir, ws) = workspace();
+        let file = dir.path().join("src/attrs.rs");
+        fs::write(
+            &file,
+            "#[inline] fn one() {}\n/// Two.\n#[derive(Debug)]\nstruct Two;\n\n// Three.\nfn three() {}\n",
+        )
+        .unwrap();
+        // `one` is a one-line symbol with its attribute: it is not part of `Two`.
+        assert_eq!(
+            ws.read_symbol("src/attrs.rs", "Two").unwrap(),
+            "// src/attrs.rs:2-4 [struct] Two\n2\t/// Two.\n3\t#[derive(Debug)]\n4\tstruct Two;\n"
+        );
+        let out = ws
+            .replace_symbol(
+                "src/attrs.rs",
+                "Two",
+                None,
+                "#[derive(Clone)]\nstruct Two;\n",
+            )
+            .unwrap();
+        assert!(out.contains("lines 2-4 are now 2 lines"), "{out}");
+        ws.replace_symbol("src/attrs.rs", "three", None, "fn three() { one() }")
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(&file).unwrap(),
+            "#[inline] fn one() {}\n#[derive(Clone)]\nstruct Two;\n\nfn three() { one() }\n"
+        );
+    }
+
+    #[test]
+    fn edits_keep_crlf_line_endings() {
+        let (dir, ws) = workspace();
+        let file = dir.path().join("src/win.rs");
+        fs::write(&file, "fn a() {\r\n}\r\n").unwrap();
+        ws.replace_symbol("src/win.rs", "a", None, "fn a() {\n    b();\n}\n")
+            .unwrap();
+        ws.insert_symbol("src/win.rs", "fn b() {}\n", Some(Anchor::After("a")), None)
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(&file).unwrap(),
+            "fn a() {\r\n    b();\r\n}\r\n\r\nfn b() {}\r\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn edits_replace_the_file_atomically_and_keep_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, ws) = workspace();
+        let file = dir.path().join("src/run.py");
+        fs::write(&file, "def main():\n    pass\n").unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).unwrap();
+        ws.replace_symbol("src/run.py", "main", None, "def main():\n    return 0\n")
+            .unwrap();
+        let mode = fs::metadata(&file).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o755);
+        let leftovers: Vec<_> = fs::read_dir(dir.path().join("src"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
     }
 
     #[test]
