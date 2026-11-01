@@ -618,6 +618,86 @@ fn signature(node: Node<'_>, body: Option<(usize, usize)>, source: &str) -> Stri
     sig
 }
 
+/// Byte offset of the start of the line holding `byte`.
+fn line_start(source: &str, byte: usize) -> usize {
+    source[..byte].rfind('\n').map_or(0, |i| i + 1)
+}
+
+/// 1-based line number of `byte`.
+pub fn line_number(source: &str, byte: usize) -> usize {
+    source[..byte].matches('\n').count() + 1
+}
+
+/// Where the lines of `sym` begin: the start of its first line, moved up
+/// over the doc comments, attributes and decorators directly above it, but
+/// never into the lines of a symbol that ends before it.
+pub fn symbol_start(parsed: &ParsedFile, source: &str, sym: &Symbol) -> usize {
+    let floor = parsed
+        .symbols
+        .iter()
+        .filter(|s| s.end_byte <= sym.start_byte)
+        .map(|s| s.end_byte)
+        .max()
+        .map_or(0, |end| {
+            source[end..]
+                .find('\n')
+                .map_or(source.len(), |i| end + i + 1)
+        });
+    attached_start(parsed.lang, source, line_start(source, sym.start_byte)).max(floor)
+}
+
+/// Move `start` (a line start) up over the comment, attribute and decorator
+/// lines directly above it, so code inserted there does not split them from
+/// the definition they belong to. Attributes and decorators spanning several
+/// lines (`#[tool(\n  ...\n)]`, `@route(\n  ...\n)`) count as a whole.
+fn attached_start(lang: Lang, source: &str, mut start: usize) -> usize {
+    /// How far up a multi-line attribute's opening line is looked for.
+    const MAX_ATTRIBUTE_LINES: usize = 30;
+    let opens = |text: &str| match lang {
+        Lang::Python => text.starts_with('#') || text.starts_with('@'),
+        _ => ["//", "/*", "*", "#[", "@", "["]
+            .iter()
+            .any(|p| text.starts_with(p)),
+    };
+    while start > 0 {
+        let prev = line_start(source, start - 1);
+        let text = source[prev..start].trim();
+        if text.is_empty() {
+            break;
+        }
+        if opens(text) {
+            start = prev;
+            continue;
+        }
+        // The closing line of a multi-line attribute: find where it opens,
+        // without crossing a blank line.
+        if !(text.ends_with(']') || text.ends_with(')')) {
+            break;
+        }
+        let mut line = prev;
+        let mut opening = None;
+        for _ in 0..MAX_ATTRIBUTE_LINES {
+            if line == 0 {
+                break;
+            }
+            line = line_start(source, line - 1);
+            let text = source[line..].lines().next().unwrap_or("").trim();
+            if text.is_empty() {
+                break;
+            }
+            if text.starts_with("#[") || text.starts_with('@') || text.starts_with('[') {
+                opening = Some(line);
+                break;
+            }
+        }
+        match opening {
+            Some(line) => start = line,
+            None => break,
+        }
+    }
+    start
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -987,6 +1067,25 @@ macro_rules! m { () => {} }
         assert!(json.contains("\"idents\":[3,6,2]"), "{json}");
         let back: ParsedFile = serde_json::from_str(&json).unwrap();
         assert_eq!(back.idents, parsed.idents);
+    }
+
+    #[test]
+    fn symbol_start_includes_attached_lines() {
+        let start_line = |lang, src: &str, name: &str| {
+            let parsed = parse_source(lang, src).unwrap();
+            let sym = parsed.symbols.iter().find(|s| s.name == name).unwrap();
+            line_number(src, symbol_start(&parsed, src, sym))
+        };
+        let rust = "fn a() {}\n\n/// Doc.\n#[tool(\n    description = \"x\"\n)]\nfn b() {}\n";
+        assert_eq!(start_line(Lang::Rust, rust, "b"), 3);
+        let py = "x = f(\n    1,\n)\n\n@route(\n    '/a',\n)\ndef view():\n    pass\n";
+        assert_eq!(start_line(Lang::Python, py, "view"), 5);
+        // A call ending in `)` right above is code, not an attribute.
+        let py = "x = f(\n    1,\n)\ndef g():\n    pass\n";
+        assert_eq!(start_line(Lang::Python, py, "g"), 4);
+        // Never reaches into the previous symbol, even without a blank line.
+        let rust = "#[inline] fn a() {}\n#[cfg(test)]\nfn b() {}\n";
+        assert_eq!(start_line(Lang::Rust, rust, "b"), 2);
     }
 
     #[test]

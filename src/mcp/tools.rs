@@ -15,7 +15,7 @@ use rmcp::model::{Implementation, ServerCapabilities, ServerConfig};
 use rmcp::{ServerHandler, schemars, tool, tool_handler, tool_router};
 use serde::Deserialize;
 
-use crate::ast::parser::{self, Lang, ParsedFile, Symbol, SymbolKind};
+use crate::ast::parser::{self, ParsedFile, Symbol, SymbolKind, line_number, symbol_start};
 use crate::ast::pruner::{self, PruneOptions};
 use crate::git;
 use crate::index::cache::{ParseCache, PersistentStore};
@@ -593,34 +593,6 @@ fn unique_symbol<'p>(
     }
 }
 
-/// Byte offset of the start of the line holding `byte`.
-fn line_start(source: &str, byte: usize) -> usize {
-    source[..byte].rfind('\n').map_or(0, |i| i + 1)
-}
-
-/// 1-based line number of `byte`.
-fn line_number(source: &str, byte: usize) -> usize {
-    source[..byte].matches('\n').count() + 1
-}
-
-/// Where the lines of `sym` begin: the start of its first line, moved up
-/// over the doc comments, attributes and decorators directly above it, but
-/// never into the lines of a symbol that ends before it.
-fn symbol_start(parsed: &ParsedFile, source: &str, sym: &Symbol) -> usize {
-    let floor = parsed
-        .symbols
-        .iter()
-        .filter(|s| s.end_byte <= sym.start_byte)
-        .map(|s| s.end_byte)
-        .max()
-        .map_or(0, |end| {
-            source[end..]
-                .find('\n')
-                .map_or(source.len(), |i| end + i + 1)
-        });
-    attached_start(parsed.lang, source, line_start(source, sym.start_byte)).max(floor)
-}
-
 /// `\r\n` when the file already uses it, so edits keep its line endings.
 fn line_ending(source: &str) -> &'static str {
     if source.contains("\r\n") {
@@ -666,27 +638,6 @@ fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
         let _ = std::fs::remove_file(&tmp);
     }
     result
-}
-
-/// Move `start` (a line start) up over the comment, attribute and decorator
-/// lines directly above it, so code inserted there does not split them from
-/// the definition they belong to.
-fn attached_start(lang: Lang, source: &str, mut start: usize) -> usize {
-    while start > 0 {
-        let prev = line_start(source, start - 1);
-        let text = source[prev..start].trim();
-        let attached = match lang {
-            Lang::Python => text.starts_with('#') || text.starts_with('@'),
-            _ => ["//", "/*", "*", "#[", "@", "["]
-                .iter()
-                .any(|p| text.starts_with(p)),
-        };
-        if text.is_empty() || !attached {
-            break;
-        }
-        start = prev;
-    }
-    start
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]

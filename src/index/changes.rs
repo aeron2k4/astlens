@@ -109,15 +109,16 @@ fn file_changes(root: &Path, spec: DiffSpec<'_>, diff: &git::FileDiff) -> Result
     let (Some(old), Some(new)) = (old, new) else {
         return Ok(unparsed);
     };
+    let (old_source, new_source) = (old, new);
     let (Ok(old), Ok(new)) = (
-        parser::parse_source(lang, &old),
-        parser::parse_source(lang, &new),
+        parser::parse_source(lang, &old_source),
+        parser::parse_source(lang, &new_source),
     ) else {
         return Ok(unparsed);
     };
 
-    let (old_touched, old_other) = touched(&old, &diff.old);
-    let (new_touched, new_other) = touched(&new, &diff.new);
+    let (old_touched, old_other) = touched(&old, &old_source, &diff.old);
+    let (new_touched, new_other) = touched(&new, &new_source, &diff.new);
     let key =
         |p: &ParsedFile, i: usize| (p.symbols[i].qualified_name(), p.symbols[i].kind.as_str());
     let find = |p: &'_ ParsedFile, k: &(String, &str)| {
@@ -164,7 +165,20 @@ fn file_changes(root: &Path, spec: DiffSpec<'_>, diff: &git::FileDiff) -> Result
             },
         );
     }
-    let mut symbols: Vec<SymbolChange> = found.into_values().collect();
+    // A symbol added or removed as a whole implies its members were too.
+    let whole: Vec<String> = found
+        .values()
+        .filter(|c| c.change != Change::Modified)
+        .map(|c| format!("{}::", c.qualified_name))
+        .collect();
+    let mut symbols: Vec<SymbolChange> = found
+        .into_values()
+        .filter(|c| {
+            !whole
+                .iter()
+                .any(|w| c.qualified_name.starts_with(w.as_str()))
+        })
+        .collect();
     symbols.sort_by(|a, b| {
         a.change
             .cmp(&b.change)
@@ -179,17 +193,31 @@ fn file_changes(root: &Path, spec: DiffSpec<'_>, diff: &git::FileDiff) -> Result
 }
 
 /// Indices of the innermost symbols holding a changed line, and the number
-/// of changed lines outside every symbol.
-fn touched(parsed: &ParsedFile, ranges: &[(usize, usize)]) -> (Vec<usize>, usize) {
+/// of changed lines outside every symbol. A symbol's lines include the doc
+/// comments and attributes directly above it; blank and closing-delimiter
+/// lines are ignored.
+fn touched(parsed: &ParsedFile, source: &str, ranges: &[(usize, usize)]) -> (Vec<usize>, usize) {
+    let lines: Vec<&str> = source.lines().collect();
+    let first_lines: Vec<usize> = parsed
+        .symbols
+        .iter()
+        .map(|s| parser::line_number(source, parser::symbol_start(parsed, source, s)))
+        .collect();
     let mut hit = vec![false; parsed.symbols.len()];
     let mut other = 0;
     for &(start, count) in ranges {
         for line in start..start + count {
+            if lines
+                .get(line.wrapping_sub(1))
+                .is_none_or(|l| insignificant(l))
+            {
+                continue;
+            }
             let innermost = parsed
                 .symbols
                 .iter()
                 .enumerate()
-                .filter(|(_, s)| s.start_line <= line && line <= s.end_line)
+                .filter(|&(i, s)| first_lines[i] <= line && line <= s.end_line)
                 .max_by_key(|(_, s)| s.depth);
             match innermost {
                 Some((i, _)) => hit[i] = true,
@@ -203,6 +231,15 @@ fn touched(parsed: &ParsedFile, ranges: &[(usize, usize)]) -> (Vec<usize>, usize
         .filter_map(|(i, &h)| h.then_some(i))
         .collect();
     (indices, other)
+}
+
+/// Blank lines and lines of closing delimiters only (`}`, `});`, `]`).
+/// Diffs often match such a line from one block with an identical line of
+/// another, which would mark the wrong symbol as changed.
+fn insignificant(line: &str) -> bool {
+    line.trim()
+        .chars()
+        .all(|c| matches!(c, '}' | ')' | ']' | ';' | ','))
 }
 
 #[cfg(test)]
@@ -300,5 +337,40 @@ mod tests {
             staged: false,
         };
         assert!(changed_symbols(root, bad).is_err());
+    }
+
+    #[test]
+    fn ignores_blank_lines_and_members_of_added_symbols() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        git(root, &["init", "-q"]);
+        fs::write(
+            root.join("lib.rs"),
+            "struct S;\n\nimpl S {\n    fn a(&self) {}\n}\n",
+        )
+        .unwrap();
+        git(root, &["add", "."]);
+        git(root, &["commit", "-qm", "init"]);
+
+        // A documented method added after a blank line inside `impl S`, and a
+        // new function whose nested constant is new by definition.
+        fs::write(
+            root.join("lib.rs"),
+            "struct S;\n\nimpl S {\n    fn a(&self) {}\n\n    /// Docs.\n    #[inline]\n    fn b(&self) {}\n}\n\nfn c() {\n    const N: u8 = 1;\n}\n",
+        )
+        .unwrap();
+        let spec = DiffSpec {
+            base: "HEAD",
+            staged: false,
+        };
+        let files = changed_symbols(root, spec).unwrap();
+        assert_eq!(
+            summary(&files),
+            [
+                ("lib.rs".into(), "added".into(), "S::b".into(), 8),
+                ("lib.rs".into(), "added".into(), "c".into(), 11),
+            ]
+        );
+        assert_eq!(files[0].other_lines, 0);
     }
 }
