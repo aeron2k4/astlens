@@ -43,9 +43,9 @@ jobs:
       matrix:
         include:
           # 22.04 links against an older glibc, so the binaries run on more distros.
-          - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04 }
-          - { target: aarch64-apple-darwin, os: macos-latest }
-          - { target: x86_64-pc-windows-msvc, os: windows-latest }
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04, name: linux }
+          - { target: aarch64-apple-darwin, os: macos-latest, name: macos }
+          - { target: x86_64-pc-windows-msvc, os: windows-latest, name: windows }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -59,20 +59,20 @@ jobs:
           key: ${{ matrix.target }}
       - run: cargo build --release --locked --target ${{ matrix.target }}
 
-      # Ship the bare executable, named by target and without the version, so
-      # releases/latest/download/code-scope-mcp-<target> is a stable URL.
+      # Ship the bare executable, named by OS and without the version, so
+      # releases/latest/download/code-scope-mcp-<os> is a stable URL.
       - name: Name binary
         shell: bash
         run: |
           ext=""
           if [ "$RUNNER_OS" = Windows ]; then ext=.exe; fi
           cp "target/${{ matrix.target }}/release/code-scope-mcp$ext" \
-            "code-scope-mcp-${{ matrix.target }}$ext"
+            "code-scope-mcp-${{ matrix.name }}$ext"
 
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.target }}
-          path: code-scope-mcp-${{ matrix.target }}*
+          path: code-scope-mcp-${{ matrix.name }}*
           if-no-files-found: error
 
   release:

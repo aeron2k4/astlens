@@ -75,18 +75,17 @@ Full results for Go, CPython and tokio are in [`BENCHMARKS.md`](BENCHMARKS.md).
 
 Prebuilt binaries for Linux (x86_64), macOS (Apple Silicon) and Windows
 (x86_64) are attached to each
-[release](https://github.com/aeron2k4/code-scope-mcp/releases), named by
-target, with their SHA-256 checksums in `SHA256SUMS`. For example, on Linux
-x86_64:
+[release](https://github.com/aeron2k4/code-scope-mcp/releases), with their
+SHA-256 checksums in `SHA256SUMS`. For example, on Linux:
 
 ```sh
 curl -fLo ~/.local/bin/code-scope-mcp \
-  https://github.com/aeron2k4/code-scope-mcp/releases/latest/download/code-scope-mcp-x86_64-unknown-linux-gnu
+  https://github.com/aeron2k4/code-scope-mcp/releases/latest/download/code-scope-mcp-linux
 chmod +x ~/.local/bin/code-scope-mcp
 ```
 
-The other binaries are `code-scope-mcp-aarch64-apple-darwin` and
-`code-scope-mcp-x86_64-pc-windows-msvc.exe`. On macOS, a binary downloaded by
+The other binaries are `code-scope-mcp-macos` and
+`code-scope-mcp-windows.exe`. On macOS, a binary downloaded by
 a browser also needs `xattr -d com.apple.quarantine code-scope-mcp`. Other
 platforms (Linux ARM, Intel macOS) can build from source.
 
