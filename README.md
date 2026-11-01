@@ -98,18 +98,22 @@ cargo build --release
 
 ### Claude Code
 
-One command builds the binary, registers it and makes Claude use it
-(requires `cargo`, `claude` and `jq`):
+One script installs the binary, registers it and makes Claude use it, on
+Linux, macOS and Windows (run it in Git Bash, which Claude Code also uses for
+hooks). It needs `curl`, `jq` and `claude`:
 
 ```sh
-scripts/install-claude.sh
+curl -fsSL https://raw.githubusercontent.com/aeron2k4/code-scope-mcp/main/scripts/install-claude.sh | bash
 ```
+
+or, from a clone, `scripts/install-claude.sh`.
 
 It does three things, all at user scope so they apply to every project:
 
-1. `cargo install` the binary to `~/.cargo/bin/code-scope-mcp` and register it
-   at user scope as `code-scope` with `"alwaysLoad": true`, so its tools are in
-   the model's tool list from the start instead of deferred behind ToolSearch.
+1. Download the latest release binary for the OS to
+   `~/.local/bin/code-scope-mcp` (`CODE_SCOPE_BIN_DIR` to change), check it
+   against `SHA256SUMS`, and register it at user scope as `code-scope` with
+   `"alwaysLoad": true`, so its tools are in the model's tool list from the start instead of deferred behind ToolSearch.
    With no root argument the server uses the session's working directory.
 2. Add a `PreToolUse` hook (`~/.claude/hooks/code-scope-guard.sh`, wired in
    `~/.claude/settings.json`) that points Claude to the code-scope tools:
@@ -128,12 +132,18 @@ It does three things, all at user scope so they apply to every project:
 3. Add a short instruction block to `~/.claude/CLAUDE.md`.
 
 Restart Claude Code afterwards. Re-running the script is safe and updates the
-binary. Options:
+binary. Options (after `| bash -s --` when piped):
 
 ```sh
-scripts/install-claude.sh --no-enforce   # step 1 only, no hook or CLAUDE.md block
-scripts/install-claude.sh --uninstall    # undo steps 1–3 (keeps the binary)
+scripts/install-claude.sh --version v0.1.0   # a specific release
+scripts/install-claude.sh --from-source      # build with cargo instead (needs Rust)
+scripts/install-claude.sh --no-enforce       # step 1 only, no hook or CLAUDE.md block
+scripts/install-claude.sh --uninstall        # undo steps 1–3 and remove the binary
 ```
+
+Where no prebuilt binary exists (Linux ARM, Intel macOS) the script builds from
+source if `cargo` is installed. On Windows, install `jq` with
+`winget install jqlang.jq`.
 
 To register manually instead:
 
