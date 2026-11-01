@@ -72,7 +72,13 @@ impl Workspace {
 
     /// Persist parse results across restarts in `store`.
     pub fn with_store(mut self, store: PersistentStore) -> Self {
-        self.cache = ParseCache::default().with_store(store);
+        self.cache = std::mem::take(&mut self.cache).with_store(store);
+        self
+    }
+
+    /// Keep parsed files within about `max_bytes` of memory.
+    pub fn with_cache_bytes(mut self, max_bytes: usize) -> Self {
+        self.cache = std::mem::take(&mut self.cache).with_max_bytes(max_bytes);
         self
     }
 

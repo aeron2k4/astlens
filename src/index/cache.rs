@@ -240,17 +240,39 @@ pub struct CachedFile {
     pub parsed: ParsedFile,
 }
 
+impl CachedFile {
+    /// Approximate heap size, for the memory budget.
+    fn weight(&self) -> usize {
+        const SYMBOL_OVERHEAD: usize = 160;
+        let symbols: usize = self
+            .parsed
+            .symbols
+            .iter()
+            .map(|s| SYMBOL_OVERHEAD + s.name.len() + s.signature.len())
+            .sum();
+        self.source.len() + self.parsed.idents.len() * 4 + symbols
+    }
+}
+
 struct Entry {
     mtime: SystemTime,
     len: u64,
     last_used: AtomicU64,
+    weight: usize,
     file: Arc<CachedFile>,
 }
+
+/// Default memory budget for cached files: enough for the 82 MB Go standard
+/// library, so a workspace-wide search does not evict what it just parsed.
+pub const DEFAULT_MAX_BYTES: usize = 512 << 20;
 
 pub struct ParseCache {
     entries: RwLock<HashMap<PathBuf, Entry>>,
     clock: AtomicU64,
     max_entries: usize,
+    max_bytes: usize,
+    /// Sum of the weights of `entries`; changed only under its write lock.
+    used_bytes: AtomicU64,
     max_file_bytes: u64,
     store: Option<PersistentStore>,
     pending: Mutex<Vec<(PathBuf, String, Arc<CachedFile>)>>,
@@ -259,7 +281,7 @@ pub struct ParseCache {
 
 impl Default for ParseCache {
     fn default() -> Self {
-        Self::new(4096, 2 * 1024 * 1024)
+        Self::new(usize::MAX, 2 * 1024 * 1024)
     }
 }
 
@@ -269,6 +291,8 @@ impl ParseCache {
             entries: RwLock::new(HashMap::new()),
             clock: AtomicU64::new(0),
             max_entries: max_entries.max(1),
+            max_bytes: DEFAULT_MAX_BYTES,
+            used_bytes: AtomicU64::new(0),
             max_file_bytes,
             store: None,
             pending: Mutex::new(Vec::new()),
@@ -277,6 +301,18 @@ impl ParseCache {
     }
 
     /// Back this cache with a persistent store.
+    /// Keep cached files within about `max_bytes` of memory, evicting the
+    /// least recently used beyond that.
+    pub fn with_max_bytes(mut self, max_bytes: usize) -> Self {
+        self.max_bytes = max_bytes;
+        self
+    }
+
+    /// Approximate memory held by cached files.
+    pub fn used_bytes(&self) -> usize {
+        self.used_bytes.load(Ordering::Relaxed) as usize
+    }
+
     pub fn with_store(mut self, store: PersistentStore) -> Self {
         self.store = Some(store);
         self
@@ -332,8 +368,11 @@ impl ParseCache {
     /// Forget the in-memory entry for `path`, e.g. after writing to it, so a
     /// rewrite that keeps the same size and mtime is never served stale.
     pub fn invalidate(&self, path: &Path) {
-        if let Ok(mut entries) = self.entries.write() {
-            entries.remove(path);
+        if let Ok(mut entries) = self.entries.write()
+            && let Some(old) = entries.remove(path)
+        {
+            self.used_bytes
+                .fetch_sub(old.weight as u64, Ordering::Relaxed);
         }
     }
 
@@ -396,15 +435,28 @@ impl ParseCache {
         };
 
         if let Ok(mut entries) = self.entries.write() {
-            if entries.len() >= self.max_entries && !entries.contains_key(path) {
-                evict_oldest(&mut entries);
+            let weight = file.weight();
+            if let Some(old) = entries.remove(path) {
+                self.used_bytes
+                    .fetch_sub(old.weight as u64, Ordering::Relaxed);
             }
+            while !entries.is_empty()
+                && (entries.len() >= self.max_entries
+                    || self.used_bytes() + weight > self.max_bytes)
+            {
+                if let Some(old) = evict_oldest(&mut entries) {
+                    self.used_bytes
+                        .fetch_sub(old.weight as u64, Ordering::Relaxed);
+                }
+            }
+            self.used_bytes.fetch_add(weight as u64, Ordering::Relaxed);
             entries.insert(
                 path.to_path_buf(),
                 Entry {
                     mtime,
                     len,
                     last_used: AtomicU64::new(self.tick()),
+                    weight,
                     file: Arc::clone(&file),
                 },
             );
@@ -419,14 +471,12 @@ impl Drop for ParseCache {
     }
 }
 
-fn evict_oldest(entries: &mut HashMap<PathBuf, Entry>) {
+fn evict_oldest(entries: &mut HashMap<PathBuf, Entry>) -> Option<Entry> {
     let oldest = entries
         .iter()
         .min_by_key(|(_, e)| e.last_used.load(Ordering::Relaxed))
-        .map(|(p, _)| p.clone());
-    if let Some(path) = oldest {
-        entries.remove(&path);
-    }
+        .map(|(p, _)| p.clone())?;
+    entries.remove(&oldest)
 }
 
 #[cfg(test)]
@@ -472,6 +522,31 @@ mod tests {
         cache.get(&paths[2]).unwrap();
         assert_eq!(cache.len(), 2);
         assert!(Arc::ptr_eq(&f0, &cache.get(&paths[0]).unwrap()));
+    }
+
+    #[test]
+    fn evicts_to_stay_within_the_memory_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths: Vec<_> = (0..4)
+            .map(|i| {
+                let p = dir.path().join(format!("f{i}.py"));
+                fs::write(&p, format!("def f{i}(): pass\n{}", "#\n".repeat(500))).unwrap();
+                p
+            })
+            .collect();
+        let one = ParseCache::default();
+        one.get(&paths[0]).unwrap();
+        let weight = one.used_bytes();
+        assert!(weight > 1000, "{weight}");
+
+        let cache = ParseCache::default().with_max_bytes(weight * 2 + weight / 2);
+        for p in &paths {
+            cache.get(p).unwrap();
+        }
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.used_bytes(), weight * 2);
+        cache.invalidate(&paths[3]);
+        assert_eq!((cache.len(), cache.used_bytes()), (1, weight));
     }
 
     #[test]

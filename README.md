@@ -38,7 +38,8 @@ Files are parsed lazily the first time they are requested, so nothing is
 indexed at startup. A parse records a file's symbols and the offsets of its
 identifier tokens, and is cached at two levels:
 
-- **in memory**, reused while a file's modification time and size are unchanged;
+- **in memory**, reused while a file's modification time and size are unchanged,
+  within a memory budget (`CODE_SCOPE_CACHE_MB`);
 - **on disk**, in an LMDB (memory-mapped) store keyed by the file's git blob
   hash, so unchanged files are not re-parsed after a restart. Entries of files
   deleted from the workspace are dropped in the background at startup.
@@ -48,6 +49,7 @@ identifier tokens, and is cached at two levels:
 | `CODE_SCOPE_ROOT`      | Workspace root when no argument is given                                |
 | `CODE_SCOPE_CACHE_DIR` | Store location (default `$XDG_CACHE_HOME/code-scope-mcp` or `~/.cache/code-scope-mcp`) |
 | `CODE_SCOPE_NO_CACHE`  | Set to `1` to keep the cache in memory only                             |
+| `CODE_SCOPE_CACHE_MB`  | Memory kept for parsed files, least recently used evicted first (default 512) |
 | `CODE_SCOPE_MAX_FILES` | Files walked per workspace-wide search (default 20000); output notes when the limit is hit |
 | `CODE_SCOPE_LOG`       | Log filter, e.g. `debug` (stderr only)                                  |
 
@@ -64,7 +66,8 @@ On the Go 1.27.3 standard library (8,236 source files, 82 MB), with a warm cache
   31 ms for the regex `TODO|FIXME|XXX`.
 - Outlines use ~92% fewer tokens than full source; reading one function costs
   a median 0.9% of its file.
-- The server answers `initialize` in ~2 ms.
+- The server answers `initialize` in ~2 ms. After searches over the whole
+  corpus it holds ~200 MB resident with the on-disk store (~315 MB without).
 
 Full results for Go, CPython and tokio are in [`BENCHMARKS.md`](BENCHMARKS.md).
 
