@@ -113,6 +113,7 @@ When exploring or reading source code, prefer the code-scope MCP tools over Read
 - \`replace_symbol\` to rewrite or delete a whole function/class, \`insert_symbol\` to add one; no Read needed.
 - \`read_file_pruned\` when a whole file is needed but may be large.
 - \`find_references\` to see where a symbol is used; \`search_text\` instead of Grep.
+- \`changed_symbols\` to see which symbols a diff touches before reading it.
 Use Read/Grep for non-code files or when code-scope fails.
 Load the tools with ToolSearch ("select:mcp__code-scope__...") if they are deferred.
 $END

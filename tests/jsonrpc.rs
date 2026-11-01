@@ -100,6 +100,7 @@ async fn mcp_session_over_jsonrpc() {
     assert_eq!(
         names,
         [
+            "changed_symbols",
             "find_references",
             "get_file_outline",
             "git_status",

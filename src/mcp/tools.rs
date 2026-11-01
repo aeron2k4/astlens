@@ -19,6 +19,7 @@ use crate::ast::parser::{self, Lang, ParsedFile, Symbol, SymbolKind};
 use crate::ast::pruner::{self, PruneOptions};
 use crate::git;
 use crate::index::cache::{ParseCache, PersistentStore};
+use crate::index::changes::{self, Change, DiffSpec};
 use crate::index::refs::{self, RefOptions};
 use crate::index::text::{self, TextOptions};
 use crate::index::{self, SearchOptions};
@@ -474,6 +475,55 @@ impl Workspace {
         Ok(out)
     }
 
+    /// Symbols added, modified or removed between `base` and the working
+    /// tree (or the index when `staged`), grouped by file.
+    pub fn changed_symbols(&self, base: &str, staged: bool) -> Result<String> {
+        let base = base.trim();
+        if base.is_empty() || base.starts_with('-') {
+            bail!("invalid base revision {base:?}");
+        }
+        let files = changes::changed_symbols(&self.root, DiffSpec { base, staged })?;
+        let side = if staged {
+            "the index"
+        } else {
+            "the working tree"
+        };
+        if files.is_empty() {
+            return Ok(format!("no changes between {base} and {side}\n"));
+        }
+        let mut out = String::new();
+        for f in &files {
+            if !f.parsed {
+                let _ = writeln!(
+                    out,
+                    "{} (not parsed): {} changed lines",
+                    f.path, f.other_lines
+                );
+                continue;
+            }
+            let _ = writeln!(out, "{}", f.path);
+            for c in &f.symbols {
+                let range = format!("L{}-{}", c.start_line, c.end_line);
+                let range = if c.change == Change::Removed {
+                    format!("(was {range})")
+                } else {
+                    range
+                };
+                let _ = writeln!(
+                    out,
+                    "  {:<8}  [{}] {}  {range}",
+                    c.change.as_str(),
+                    c.kind.as_str(),
+                    c.qualified_name
+                );
+            }
+            if f.other_lines > 0 {
+                let _ = writeln!(out, "  {} changed lines outside symbols", f.other_lines);
+            }
+        }
+        Ok(out)
+    }
+
     pub fn git_status(&self) -> Result<String> {
         let entries = git::status(&self.root)?;
         if entries.is_empty() {
@@ -694,6 +744,16 @@ pub struct InsertSymbolParams {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ChangedSymbolsParams {
+    /// Revision to compare against, e.g. `main` or `HEAD~3` (default `HEAD`).
+    #[serde(default)]
+    pub base: Option<String>,
+    /// Compare the staged changes (the index) instead of the working tree.
+    #[serde(default)]
+    pub staged: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ReadPrunedParams {
     /// File path relative to the workspace root.
     pub path: String,
@@ -906,6 +966,22 @@ impl CodeScope {
             .await
     }
 
+    #[tool(
+        description = "List the functions, classes, ... added, modified or removed by uncommitted changes (or since `base`, e.g. a branch), per file, instead of reading the raw diff. Untracked files count as added."
+    )]
+    async fn changed_symbols(
+        &self,
+        Parameters(p): Parameters<ChangedSymbolsParams>,
+    ) -> Result<String, String> {
+        self.run(move |ws| {
+            ws.changed_symbols(
+                p.base.as_deref().unwrap_or("HEAD"),
+                p.staged.unwrap_or(false),
+            )
+        })
+        .await
+    }
+
     #[tool(description = "Show git working-tree status (modified, staged, untracked files).")]
     async fn git_status(&self) -> Result<String, String> {
         self.run(move |ws| ws.git_status()).await
@@ -926,7 +1002,7 @@ impl ServerHandler for CodeScope {
                  a whole file within a token budget. Use find_references to see where a symbol \
                  is used and search_text instead of grep. To rewrite a whole function or class, \
                  use replace_symbol, and insert_symbol to add one, instead of reading and \
-                 editing the file.",
+                 editing the file. changed_symbols summarises a git diff by symbol.",
             )
     }
 }
@@ -1247,6 +1323,43 @@ mod tests {
             .filter(|n| n.ends_with(".tmp"))
             .collect();
         assert!(leftovers.is_empty(), "{leftovers:?}");
+    }
+
+    #[test]
+    fn changed_symbols_groups_a_diff_by_symbol() {
+        let (dir, ws) = workspace();
+        let git = |args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir.path())
+                .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
+                .args(args)
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "git {args:?}");
+        };
+        git(&["init", "-q"]);
+        git(&["add", "."]);
+        git(&["commit", "-qm", "init"]);
+        assert_eq!(
+            ws.changed_symbols("HEAD", false).unwrap(),
+            "no changes between HEAD and the working tree\n"
+        );
+
+        ws.replace_symbol(
+            "src/lib.rs",
+            "Cfg::load",
+            None,
+            "    pub fn load() -> Self {\n        Self\n    }",
+        )
+        .unwrap();
+        fs::write(dir.path().join("TODO.txt"), "x\n").unwrap();
+        assert_eq!(
+            ws.changed_symbols("HEAD", false).unwrap(),
+            "TODO.txt (not parsed): 1 changed lines\nsrc/lib.rs\n  modified  [method] Cfg::load  L4-6\n"
+        );
+        assert!(ws.changed_symbols("--output=x", false).is_err());
     }
 
     #[test]

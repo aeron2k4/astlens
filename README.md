@@ -20,6 +20,7 @@ C#. `.h` headers are parsed as C.
 | `find_references`  | Uses of a symbol from identifier tokens (comments and strings skipped)           |
 | `search_text`      | Literal or regex search over files, honouring `.gitignore`                       |
 | `list_files`       | Files under a directory, honouring `.gitignore`                                  |
+| `changed_symbols`  | Symbols added/modified/removed by uncommitted changes or since a revision        |
 | `git_status`       | Working-tree status                                                              |
 
 Hits are one per line. `find_references` prints `path:line:col: text`, with

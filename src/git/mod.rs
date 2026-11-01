@@ -93,6 +93,129 @@ fn parse_porcelain(raw: &str) -> Vec<FileStatus> {
     out
 }
 
+/// Changed line ranges of one file in a diff, as `(start, count)` pairs on
+/// each side; a count of 0 marks a pure insertion or deletion point.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileDiff {
+    /// Path on the new side relative to `root`, or the old path when deleted.
+    pub path: String,
+    pub old: Vec<(usize, usize)>,
+    pub new: Vec<(usize, usize)>,
+    pub added: bool,
+    pub deleted: bool,
+}
+
+/// Line-level diff of the working tree (or the index when `staged`) against
+/// `base`, limited to files under `root`, with paths relative to it.
+pub fn diff(root: &Path, base: &str, staged: bool) -> Result<Vec<FileDiff>> {
+    let mut cmd = Command::new("git");
+    // Fixed prefixes and unquoted paths whatever the user's git config says.
+    cmd.arg("-C").arg(root).args([
+        "-c",
+        "core.quotePath=false",
+        "diff",
+        "--src-prefix=a/",
+        "--dst-prefix=b/",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-renames",
+        "--unified=0",
+        "--relative",
+    ]);
+    if staged {
+        cmd.arg("--cached");
+    }
+    let output = cmd
+        .arg(base)
+        .arg("--")
+        .output()
+        .context("failed to run git")?;
+    if !output.status.success() {
+        bail!(
+            "git diff failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(parse_diff(&String::from_utf8_lossy(&output.stdout)))
+}
+
+fn parse_diff(raw: &str) -> Vec<FileDiff> {
+    let mut files: Vec<FileDiff> = Vec::new();
+    let mut old_path = None;
+    for line in raw.lines() {
+        if line.starts_with("diff --git ") {
+            old_path = None;
+        } else if let Some(p) = line.strip_prefix("--- ") {
+            old_path = p.strip_prefix("a/").map(str::to_string);
+        } else if let Some(p) = line.strip_prefix("+++ ") {
+            let new_path = p.strip_prefix("b/").map(str::to_string);
+            let deleted = new_path.is_none();
+            let Some(path) = new_path.or_else(|| old_path.take()) else {
+                continue;
+            };
+            files.push(FileDiff {
+                path,
+                old: Vec::new(),
+                new: Vec::new(),
+                added: old_path.is_none() && !deleted,
+                deleted,
+            });
+        } else if let Some(header) = line.strip_prefix("@@ ")
+            && let Some(file) = files.last_mut()
+        {
+            // @@ -a[,b] +c[,d] @@ context
+            let mut parts = header.split_whitespace();
+            let range = |part: Option<&str>, sign: char| {
+                let spec = part?.strip_prefix(sign)?;
+                let (start, count) = spec.split_once(',').unwrap_or((spec, "1"));
+                Some((start.parse().ok()?, count.parse().ok()?))
+            };
+            if let (Some(old), Some(new)) = (range(parts.next(), '-'), range(parts.next(), '+')) {
+                file.old.push(old);
+                file.new.push(new);
+            }
+        }
+    }
+    files
+}
+
+/// Contents of `path` (relative to `root`) at `rev`, or in the index when
+/// `rev` is empty; `None` when it does not exist there.
+pub fn show(root: &Path, rev: &str, path: &str) -> Result<Option<String>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .arg("show")
+        .arg(format!("{rev}:./{path}"))
+        .output()
+        .context("failed to run git")?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    Ok(String::from_utf8(output.stdout).ok())
+}
+
+/// Untracked, non-ignored files under `root`, relative to it.
+pub fn untracked(root: &Path) -> Result<Vec<String>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["ls-files", "--others", "--exclude-standard", "-z"])
+        .output()
+        .context("failed to run git")?;
+    if !output.status.success() {
+        bail!(
+            "git ls-files failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .split('\0')
+        .filter(|p| !p.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -137,6 +260,38 @@ mod tests {
         assert_eq!(parsed[1].code, "??");
         assert_eq!(parsed[2].path, "b.rs");
         assert_eq!(parsed[2].renamed_from.as_deref(), Some("old_b.rs"));
+    }
+
+    #[test]
+    fn parses_unified_zero_diff() {
+        let raw = "diff --git a/src/a.rs b/src/a.rs\nindex 1..2 100644\n--- a/src/a.rs\n+++ b/src/a.rs\n@@ -3 +3,2 @@ fn f() {\n-x\n+y\n+z\n@@ -10,2 +11,0 @@\n-a\n-b\ndiff --git a/new.py b/new.py\nnew file mode 100644\n--- /dev/null\n+++ b/new.py\n@@ -0,0 +1,2 @@\n+def f():\n+    pass\ndiff --git a/old.go b/old.go\ndeleted file mode 100644\n--- a/old.go\n+++ /dev/null\n@@ -1 +0,0 @@\n-package p\n";
+        let files = parse_diff(raw);
+        assert_eq!(
+            files,
+            vec![
+                FileDiff {
+                    path: "src/a.rs".into(),
+                    old: vec![(3, 1), (10, 2)],
+                    new: vec![(3, 2), (11, 0)],
+                    added: false,
+                    deleted: false,
+                },
+                FileDiff {
+                    path: "new.py".into(),
+                    old: vec![(0, 0)],
+                    new: vec![(1, 2)],
+                    added: true,
+                    deleted: false,
+                },
+                FileDiff {
+                    path: "old.go".into(),
+                    old: vec![(1, 1)],
+                    new: vec![(0, 0)],
+                    added: false,
+                    deleted: true,
+                },
+            ]
+        );
     }
 
     #[test]

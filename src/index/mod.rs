@@ -1,6 +1,7 @@
 //! Project-wide symbol search on top of the lazy parse cache.
 
 pub mod cache;
+pub mod changes;
 pub mod refs;
 pub mod text;
 
