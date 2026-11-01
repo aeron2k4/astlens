@@ -75,6 +75,46 @@ fn owner_of(source: &str, start: usize) -> Owner<'_> {
     }
 }
 
+/// How an occurrence relates to the owner named in a qualified query.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ownership {
+    /// Provably on the owner: `Owner::name`, `Owner.name`, or `Self::name` /
+    /// `self.name` inside the owner.
+    Owner,
+    /// Provably elsewhere: another path, or `Self::name` in another type.
+    Foreign,
+    /// Cannot tell, e.g. `x.name` or a bare `name`.
+    Unknown,
+}
+
+struct Candidate {
+    hit: RefHit,
+    ownership: Ownership,
+    /// Followed by a call: `name(` or `name::<T>(`.
+    call: bool,
+    def_kind: Option<SymbolKind>,
+}
+
+fn classify(found: Owner<'_>, owner: &str, enclosing: Option<&str>) -> Ownership {
+    let by_scope = || match enclosing {
+        Some(_) if in_scope(enclosing, owner) => Ownership::Owner,
+        Some(_) => Ownership::Foreign,
+        None => Ownership::Unknown,
+    };
+    match found {
+        Owner::Path(p) | Owner::Member(p) if p == owner => Ownership::Owner,
+        Owner::Path("Self" | "self") | Owner::Member("self" | "this" | "Self") => by_scope(),
+        Owner::Path("super" | "crate") => Ownership::Unknown,
+        Owner::Path(_) => Ownership::Foreign,
+        Owner::Member(_) | Owner::Unknown => Ownership::Unknown,
+    }
+}
+
+fn is_call(source: &str, end: usize) -> bool {
+    let rest = source[end..].trim_start_matches([' ', '\t']);
+    rest.starts_with('(') || rest.starts_with("::<")
+}
+
 /// Whether qualified name `scope` (`a::Foo::bar`) contains segment `owner`.
 fn in_scope(scope: Option<&str>, owner: &str) -> bool {
     scope.is_some_and(|s| s.split("::").any(|seg| seg == owner))
@@ -107,7 +147,7 @@ pub fn find_references(
         .filter(|p| Lang::from_path(p).is_some())
         .collect();
 
-    let hits = par_flat_map(&files, |rel| {
+    let candidates = par_flat_map(&files, |rel| {
         let abs = root.join(rel);
         let file = match cache.get(&abs) {
             Ok(f) => f,
@@ -124,55 +164,81 @@ pub fn find_references(
         // A definition's name is the first occurrence inside its range.
         // `impl Foo` blocks count as uses of `Foo`, not definitions.
         let symbols = &file.parsed.symbols;
-        let definitions: Vec<usize> = symbols
+        let definitions: Vec<(usize, SymbolKind)> = symbols
             .iter()
             .filter(|s| s.name == name && s.kind != SymbolKind::Impl)
             .filter_map(|s| {
                 occurrences
                     .iter()
                     .find(|o| o.start_byte >= s.start_byte && o.start_byte < s.end_byte)
-                    .map(|o| o.start_byte)
+                    .map(|o| (o.start_byte, s.kind))
             })
             .collect();
 
         occurrences
             .iter()
             .filter_map(|o| {
-                let is_definition = definitions.contains(&o.start_byte);
-                if is_definition && !opts.include_definitions {
-                    return None;
-                }
+                let def_kind = definitions
+                    .iter()
+                    .find(|(b, _)| *b == o.start_byte)
+                    .map(|&(_, k)| k);
                 // A definition is enclosed by its own symbol; report the parent.
                 let innermost = enclosing_symbol(symbols, o.start_byte);
                 let enclosing = match innermost {
-                    Some(s) if is_definition && s.name == name => s.parent.clone(),
+                    Some(s) if def_kind.is_some() && s.name == name => s.parent.clone(),
                     other => other.map(|s| s.qualified_name()),
                 };
-                if let Some(owner) = owner {
-                    let foreign = if is_definition {
-                        enclosing.is_some() && !in_scope(enclosing.as_deref(), owner)
-                    } else {
-                        matches!(
-                            owner_of(&file.source, o.start_byte),
-                            Owner::Path(p)
-                                if p != owner && !matches!(p, "Self" | "self" | "super" | "crate")
-                        )
-                    };
-                    if foreign {
-                        return None;
-                    }
+                let ownership = match owner {
+                    None => Ownership::Unknown,
+                    Some(owner) if def_kind.is_some() => match &enclosing {
+                        None => Ownership::Unknown,
+                        Some(_) if in_scope(enclosing.as_deref(), owner) => Ownership::Owner,
+                        Some(_) => Ownership::Foreign,
+                    },
+                    Some(owner) => classify(
+                        owner_of(&file.source, o.start_byte),
+                        owner,
+                        enclosing.as_deref(),
+                    ),
+                };
+                if ownership == Ownership::Foreign {
+                    return None;
                 }
-                Some(RefHit {
-                    path: rel.to_string_lossy().into_owned(),
-                    line: o.line,
-                    column: o.column,
-                    text: line_excerpt(&file.source, o.start_byte),
-                    enclosing,
-                    is_definition,
+                Some(Candidate {
+                    hit: RefHit {
+                        path: rel.to_string_lossy().into_owned(),
+                        line: o.line,
+                        column: o.column,
+                        text: line_excerpt(&file.source, o.start_byte),
+                        enclosing,
+                        is_definition: def_kind.is_some(),
+                    },
+                    ownership,
+                    call: is_call(&file.source, o.start_byte + name.len()),
+                    def_kind,
                 })
             })
             .collect()
     });
+
+    // When the definitions on the owner are all functions or methods, a use
+    // through an unknown receiver must at least be a call: that drops
+    // variables, fields and parameters that merely share the name.
+    let target_kinds: Vec<SymbolKind> = candidates
+        .iter()
+        .filter(|c| c.ownership == Ownership::Owner)
+        .filter_map(|c| c.def_kind)
+        .collect();
+    let calls_only =
+        owner.is_some() && !target_kinds.is_empty() && target_kinds.iter().all(|k| k.is_callable());
+    let hits = candidates
+        .into_iter()
+        .filter(|c| opts.include_definitions || c.def_kind.is_none())
+        .filter(|c| {
+            !calls_only || c.def_kind.is_some() || c.ownership == Ownership::Owner || c.call
+        })
+        .map(|c| c.hit)
+        .collect();
     Found { hits, truncated }
 }
 
@@ -238,7 +304,7 @@ mod tests {
         let root = dir.path();
         fs::write(
             root.join("lib.rs"),
-            "struct A;\nstruct B;\nimpl A {\n    fn new() -> Self { A }\n    fn make() -> Self { Self::new() }\n}\nimpl B {\n    fn new() -> Self { B }\n}\nfn f(x: A) {\n    A::new();\n    B::new();\n    x.new();\n}\n",
+            "struct A;\nstruct B;\nimpl A {\n    fn new() -> Self { A }\n    fn make() -> Self { Self::new() }\n}\nimpl B {\n    fn new() -> Self { B }\n}\nfn f(x: A) {\n    A::new();\n    B::new();\n    x.new();\n    let new = 1;\n    g(new, x.new);\n}\n",
         )
         .unwrap();
         let cache = ParseCache::default();
@@ -252,9 +318,11 @@ mod tests {
                 .map(|h| h.line)
                 .collect()
         };
-        assert_eq!(lines("new"), [4, 5, 8, 11, 12, 13]);
+        assert_eq!(lines("new"), [4, 5, 8, 11, 12, 13, 14, 15, 15]);
+        // `Self::new()` on line 5 is inside `impl A`; the variable `new`
+        // and the field `x.new` are not calls, so they cannot be the method.
         assert_eq!(lines("A::new"), [4, 5, 11, 13]);
-        assert_eq!(lines("B::new"), [5, 8, 12, 13]);
+        assert_eq!(lines("B::new"), [8, 12, 13]);
     }
 
     #[test]
