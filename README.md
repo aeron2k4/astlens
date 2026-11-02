@@ -167,9 +167,11 @@ git tag -a v0.2.0 -m "code-scope-mcp 0.2.0"
 git push origin v0.2.0
 ```
 
-The release workflow checks that the tag matches `Cargo.toml`, builds the three
-targets and publishes their binaries and `SHA256SUMS` as a GitHub Release with
-generated notes.
+The release workflow checks that the tag matches `Cargo.toml`, runs the tests on
+Linux and publishes a GitHub Release with the Linux binary, `SHA256SUMS` and
+generated notes, without waiting for other runners. The macOS and Windows
+binaries are then built and added to that release, so they appear later. Until
+then, downloading them fails, including through `scripts/install-claude.sh`.
 
 ## Development
 
