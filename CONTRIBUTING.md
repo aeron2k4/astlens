@@ -26,8 +26,8 @@ BENCH_OUT=BENCHMARKS.md cargo bench --bench report
 Bump `version` in `Cargo.toml`, commit, then push a matching tag:
 
 ```sh
-git tag -a v0.4.0 -m "astlens 0.4.0"
-git push origin v0.4.0
+git tag -a v0.1.0 -m "astlens 0.1.0"
+git push origin v0.1.0
 ```
 
 The release workflow checks that the tag matches `Cargo.toml`, runs the tests on

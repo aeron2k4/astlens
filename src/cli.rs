@@ -31,7 +31,7 @@ pub enum Command {
 /// stdin is a terminal.
 ///
 /// Older registrations run the binary with no argument, with a root directory,
-/// or with the `serve` command of v0.2.0. Their stdin is a pipe, so outside a
+/// or with an earlier `serve` command. Their stdin is a pipe, so outside a
 /// terminal all three still start the server.
 pub fn parse(args: &[OsString], interactive: bool) -> Result<Command, String> {
     let mut args = args.iter();

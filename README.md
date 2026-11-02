@@ -39,7 +39,7 @@ It checks the latest release against `SHA256SUMS`, saves the binary as
 `PATH` if missing. To install a specific release:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/aeron2k4/astlens/main/scripts/install.sh | bash -s -- --version v0.4.0
+curl -fsSL https://raw.githubusercontent.com/aeron2k4/astlens/main/scripts/install.sh | bash -s -- --version v0.1.0
 ```
 
 Then set up Claude Code. This needs `claude`, and `jq` for the hook (on Windows,

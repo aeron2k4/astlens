@@ -1,7 +1,7 @@
 name: Release
 
-# Push a tag matching the version in Cargo.toml, e.g. `git tag -a v0.2.0 -m
-# "astlens 0.2.0" && git push origin v0.2.0`. To release a tag that
+# Push a tag matching the version in Cargo.toml, e.g. `git tag -a v0.1.0 -m
+# "astlens 0.1.0" && git push origin v0.1.0`. To release a tag that
 # already exists, run this workflow by hand with that tag.
 on:
   push:
