@@ -1,0 +1,550 @@
+//! `install` and `uninstall`: set this binary up in Claude Code at user scope.
+//!
+//! Install registers the MCP server, writes the guard hook and adds a short
+//! instruction block to `CLAUDE.md`. Uninstall undoes that, removes the block
+//! `scripts/install.sh` added to the shell rc files, and deletes the binary.
+//! Output goes to stderr, like everything else this binary logs.
+
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output, Stdio};
+
+use anyhow::{Context, Result, anyhow, bail};
+use serde_json::{Value, json};
+
+const SERVER: &str = "code-scope";
+const GUARD: &str = include_str!("../scripts/code-scope-guard.sh");
+const GUARD_NAME: &str = "code-scope-guard.sh";
+
+const MEMORY_BEGIN: &str = "<!-- code-scope:begin -->";
+const MEMORY_END: &str = "<!-- code-scope:end -->";
+const MEMORY_TEXT: &str = "\
+# Code navigation
+When exploring or reading source code, prefer the code-scope MCP tools over Read/Grep:
+- `get_file_outline` before opening a file; `search_symbols` to find a definition.
+- `read_symbol` to read one function/class instead of the whole file.
+- `replace_symbol` to rewrite or delete a whole function/class, `insert_symbol` to add one; no Read needed.
+- `read_file_pruned` when a whole file is needed but may be large.
+- `find_references` to see where a symbol is used; `search_text` instead of Grep.
+- `changed_symbols` to see which symbols a diff touches before reading it.
+Use Read/Grep for non-code files or when code-scope fails.
+Load the tools with ToolSearch (\"select:mcp__code-scope__...\") if they are deferred.
+";
+
+// Must match the markers in scripts/install.sh.
+const RC_BEGIN: &str = "# code-scope-mcp:begin";
+const RC_END: &str = "# code-scope-mcp:end";
+
+fn log(message: impl std::fmt::Display) {
+    eprintln!("==> {message}");
+}
+
+/// Files this module touches.
+struct Paths {
+    hook: PathBuf,
+    settings: PathBuf,
+    memory: PathBuf,
+    rc_files: Vec<PathBuf>,
+    cargo_bin: PathBuf,
+}
+
+impl Paths {
+    fn from_env() -> Result<Self> {
+        let home = std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .map(PathBuf::from)
+            .ok_or_else(|| anyhow!("neither HOME nor USERPROFILE is set"))?;
+        let var = |name: &str| std::env::var_os(name).map(PathBuf::from);
+        let claude = var("CLAUDE_CONFIG_DIR").unwrap_or_else(|| home.join(".claude"));
+        let zsh = var("ZDOTDIR").unwrap_or_else(|| home.clone());
+        let config = var("XDG_CONFIG_HOME").unwrap_or_else(|| home.join(".config"));
+        Ok(Self {
+            hook: claude.join("hooks").join(GUARD_NAME),
+            settings: claude.join("settings.json"),
+            memory: claude.join("CLAUDE.md"),
+            rc_files: vec![
+                home.join(".bashrc"),
+                home.join(".bash_profile"),
+                zsh.join(".zshrc"),
+                config.join("fish").join("config.fish"),
+            ],
+            cargo_bin: var("CARGO_HOME")
+                .unwrap_or_else(|| home.join(".cargo"))
+                .join("bin"),
+        })
+    }
+}
+
+/// Run the `claude` CLI. On Windows an npm install provides `claude.cmd`,
+/// which `Command` does not find under the bare name.
+fn claude(args: &[&str]) -> io::Result<Output> {
+    let run = |program: &str| {
+        Command::new(program)
+            .args(args)
+            .stdin(Stdio::null())
+            .output()
+    };
+    match run("claude") {
+        Err(err) if cfg!(windows) && err.kind() == io::ErrorKind::NotFound => run("claude.cmd"),
+        other => other,
+    }
+}
+
+fn has_jq() -> bool {
+    Command::new("jq")
+        .arg("--version")
+        .stdin(Stdio::null())
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
+fn current_exe() -> Result<PathBuf> {
+    let exe = std::env::current_exe().context("cannot locate this binary")?;
+    Ok(exe.canonicalize().unwrap_or(exe))
+}
+
+/// A path as Claude Code should see it: Windows paths lose the verbatim prefix
+/// from `canonicalize` and use forward slashes, which Git Bash also accepts.
+fn native_path(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    if cfg!(windows) {
+        text.trim_start_matches(r"\\?\").replace('\\', "/")
+    } else {
+        text.into_owned()
+    }
+}
+
+pub fn install(enforce: bool) -> Result<()> {
+    let paths = Paths::from_env()?;
+    if let Err(err) = claude(&["--version"]) {
+        bail!("cannot run 'claude' ({err}); install Claude Code first");
+    }
+    if enforce && !has_jq() {
+        bail!(
+            "'jq' not found, and the hook needs it; install jq, or use --no-enforce to skip the hook"
+        );
+    }
+
+    let exe = current_exe()?;
+    log(format_args!(
+        "Registering MCP server '{SERVER}' (user scope)"
+    ));
+    let _ = claude(&["mcp", "remove", "--scope", "user", SERVER]);
+    // alwaysLoad keeps the tools in the model's manifest; without it Claude Code
+    // defers them behind ToolSearch and the model falls back to Read/Grep.
+    let config = json!({
+        "type": "stdio",
+        "command": native_path(&exe),
+        "args": ["serve"],
+        "alwaysLoad": true,
+    });
+    let output = claude(&[
+        "mcp",
+        "add-json",
+        "--scope",
+        "user",
+        SERVER,
+        &config.to_string(),
+    ])
+    .context("cannot run 'claude mcp add-json'")?;
+    if !output.status.success() {
+        bail!(
+            "'claude mcp add-json' failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+
+    if enforce {
+        log(format_args!("Writing hook {}", paths.hook.display()));
+        write_hook(&paths.hook)?;
+        log(format_args!("Adding hook to {}", paths.settings.display()));
+        add_hook_to_settings(&paths)?;
+        log(format_args!(
+            "Adding instructions to {}",
+            paths.memory.display()
+        ));
+        add_memory(&paths.memory)?;
+    }
+    log("Done. Restart Claude Code, then check with: claude mcp list");
+    Ok(())
+}
+
+pub fn uninstall() -> Result<()> {
+    let paths = Paths::from_env()?;
+    log("Removing MCP server registration");
+    if let Err(err) = claude(&["mcp", "remove", "--scope", "user", SERVER]) {
+        log(format_args!(
+            "Could not run 'claude' ({err}); remove it later with: claude mcp remove --scope user {SERVER}"
+        ));
+    }
+    log("Removing hook, CLAUDE.md block and shell alias");
+    remove_files(&paths)?;
+    remove_binary(&current_exe()?, &paths.cargo_bin);
+    log("Done. Restart Claude Code and open a new shell.");
+    Ok(())
+}
+
+fn write_hook(hook: &Path) -> Result<()> {
+    if let Some(dir) = hook.parent() {
+        fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
+    }
+    fs::write(hook, GUARD).with_context(|| format!("cannot write {}", hook.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(hook, fs::Permissions::from_mode(0o755))
+            .with_context(|| format!("cannot make {} executable", hook.display()))?;
+    }
+    Ok(())
+}
+
+/// Read settings, refusing to touch a file that is not a JSON object.
+fn read_settings(path: &Path) -> Result<Option<Value>> {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err).with_context(|| format!("cannot read {}", path.display())),
+    };
+    if text.trim().is_empty() {
+        return Ok(Some(json!({})));
+    }
+    let value: Value = serde_json::from_str(&text)
+        .with_context(|| format!("{} is not valid JSON; fix it first", path.display()))?;
+    if !value.is_object() {
+        bail!("{} is not a JSON object; fix it first", path.display());
+    }
+    Ok(Some(value))
+}
+
+fn write_settings(path: &Path, settings: &Value) -> Result<()> {
+    let mut text = serde_json::to_string_pretty(settings)?;
+    text.push('\n');
+    fs::write(path, text).with_context(|| format!("cannot write {}", path.display()))
+}
+
+fn add_hook_to_settings(paths: &Paths) -> Result<()> {
+    let mut settings = match read_settings(&paths.settings)? {
+        Some(settings) => {
+            let backup = paths.settings.with_extension("json.bak");
+            fs::copy(&paths.settings, &backup)
+                .with_context(|| format!("cannot write {}", backup.display()))?;
+            settings
+        }
+        None => json!({}),
+    };
+    // Quoted, so that a home directory with a space keeps working.
+    add_hook(&mut settings, &format!("\"{}\"", native_path(&paths.hook)))?;
+    write_settings(&paths.settings, &settings)
+}
+
+/// Append our entry after the existing hooks, replacing an earlier one.
+fn add_hook(settings: &mut Value, command: &str) -> Result<()> {
+    strip_hook(settings);
+    let entry = json!({
+        "matcher": "Read|Grep|Bash",
+        "hooks": [{"type": "command", "command": command}],
+    });
+    let root = settings
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("settings are not a JSON object"))?;
+    let hooks = root.entry("hooks").or_insert_with(|| json!({}));
+    let pre = hooks
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("settings: 'hooks' is not an object"))?
+        .entry("PreToolUse")
+        .or_insert_with(|| json!([]));
+    pre.as_array_mut()
+        .ok_or_else(|| anyhow!("settings: 'hooks.PreToolUse' is not an array"))?
+        .push(entry);
+    Ok(())
+}
+
+/// Drop our hook, matched by file name so that any older form of the command
+/// goes too, and leave no empty containers behind. Other hooks stay as they are.
+fn strip_hook(settings: &mut Value) {
+    let Some(hooks) = settings.get_mut("hooks").and_then(Value::as_object_mut) else {
+        return;
+    };
+    let Some(pre) = hooks.get_mut("PreToolUse").and_then(Value::as_array_mut) else {
+        return;
+    };
+    pre.retain_mut(|entry| {
+        let Some(commands) = entry.get_mut("hooks").and_then(Value::as_array_mut) else {
+            return true;
+        };
+        let before = commands.len();
+        commands.retain(|hook| {
+            !hook
+                .get("command")
+                .and_then(Value::as_str)
+                .is_some_and(|command| command.contains(GUARD_NAME))
+        });
+        // An entry that had no commands to begin with is not ours to remove.
+        !commands.is_empty() || before == 0
+    });
+    if pre.is_empty() {
+        hooks.remove("PreToolUse");
+    }
+    if hooks.is_empty()
+        && let Some(root) = settings.as_object_mut()
+    {
+        root.remove("hooks");
+    }
+}
+
+fn add_memory(path: &Path) -> Result<()> {
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
+    }
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(err) => return Err(err).with_context(|| format!("cannot read {}", path.display())),
+    };
+    let mut text = strip_block(&text, MEMORY_BEGIN, MEMORY_END);
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str(&format!("{MEMORY_BEGIN}\n{MEMORY_TEXT}{MEMORY_END}\n"));
+    fs::write(path, text).with_context(|| format!("cannot write {}", path.display()))
+}
+
+/// Remove `begin`..`end` lines. A `begin` with no `end` after it stays, so a
+/// damaged block never takes the user's text below it.
+fn strip_block(text: &str, begin: &str, end: &str) -> String {
+    let is = |line: &str, marker: &str| line.trim_end_matches(['\r', '\n']) == marker;
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let mut kept = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < lines.len() {
+        if is(lines[i], begin)
+            && let Some(len) = lines[i..].iter().position(|line| is(line, end))
+        {
+            i += len + 1;
+            continue;
+        }
+        kept.push_str(lines[i]);
+        i += 1;
+    }
+    kept
+}
+
+/// Remove a block from a file, leaving a file without the block untouched.
+fn strip_block_in_file(path: &Path, begin: &str, end: &str) -> Result<()> {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err).with_context(|| format!("cannot read {}", path.display())),
+    };
+    let stripped = strip_block(&text, begin, end);
+    if stripped != text {
+        fs::write(path, stripped).with_context(|| format!("cannot write {}", path.display()))?;
+    }
+    Ok(())
+}
+
+/// Everything uninstall removes except the MCP registration and the binary.
+fn remove_files(paths: &Paths) -> Result<()> {
+    if let Some(mut settings) = read_settings(&paths.settings)? {
+        let before = settings.clone();
+        strip_hook(&mut settings);
+        if settings != before {
+            write_settings(&paths.settings, &settings)?;
+        }
+    }
+    match fs::remove_file(&paths.hook) {
+        Err(err) if err.kind() != io::ErrorKind::NotFound => {
+            return Err(err).with_context(|| format!("cannot remove {}", paths.hook.display()));
+        }
+        _ => {}
+    }
+    strip_block_in_file(&paths.memory, MEMORY_BEGIN, MEMORY_END)?;
+    for rc in &paths.rc_files {
+        strip_block_in_file(rc, RC_BEGIN, RC_END)?;
+    }
+    Ok(())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Owner {
+    Cargo,
+    PackageManager,
+    User,
+}
+
+/// Who should remove this binary. Deleting a cargo or package manager file by
+/// hand would leave that tool's records wrong.
+fn owner(exe: &Path, cargo_bin: &Path) -> Owner {
+    let cargo_bin = cargo_bin
+        .canonicalize()
+        .unwrap_or_else(|_| cargo_bin.to_path_buf());
+    if exe.starts_with(&cargo_bin) {
+        Owner::Cargo
+    } else if exe.starts_with("/usr") || exe.starts_with("/opt") {
+        Owner::PackageManager
+    } else {
+        Owner::User
+    }
+}
+
+fn remove_binary(exe: &Path, cargo_bin: &Path) {
+    let shown = exe.display();
+    match owner(exe, cargo_bin) {
+        Owner::Cargo => log("Installed by cargo; remove it with: cargo uninstall code-scope-mcp"),
+        Owner::PackageManager => log(format_args!(
+            "Not removing {shown}; use the package manager that installed it"
+        )),
+        Owner::User => match fs::remove_file(exe) {
+            Ok(()) => log(format_args!("Removed {shown}")),
+            // Windows refuses to delete a running executable.
+            Err(err) => log(format_args!(
+                "Could not remove {shown} ({err}); close Claude Code, then delete it by hand"
+            )),
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn paths(dir: &Path) -> Paths {
+        Paths {
+            hook: dir.join("claude/hooks").join(GUARD_NAME),
+            settings: dir.join("claude/settings.json"),
+            memory: dir.join("claude/CLAUDE.md"),
+            rc_files: vec![dir.join(".bashrc"), dir.join("fish/config.fish")],
+            cargo_bin: dir.join(".cargo/bin"),
+        }
+    }
+
+    fn commands(settings: &Value) -> Vec<String> {
+        settings["hooks"]["PreToolUse"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|entry| entry["hooks"].as_array().unwrap())
+            .map(|hook| hook["command"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn hook_goes_after_other_hooks_and_replaces_older_forms() {
+        let mut settings = json!({
+            "model": "x",
+            "hooks": {"PreToolUse": [
+                {"matcher": "Bash", "hooks": [{"type": "command", "command": "rtk hook claude"}]},
+                {"matcher": "Read|Grep", "hooks": [{"type": "command", "command": "/old/code-scope-guard.sh"}]},
+            ]},
+        });
+        add_hook(&mut settings, "\"/new/code-scope-guard.sh\"").unwrap();
+        assert_eq!(
+            commands(&settings),
+            ["rtk hook claude", "\"/new/code-scope-guard.sh\""]
+        );
+        assert_eq!(settings["model"], "x");
+    }
+
+    #[test]
+    fn stripping_the_only_hook_leaves_no_empty_containers() {
+        let mut settings = json!({"model": "x"});
+        add_hook(&mut settings, "/h/code-scope-guard.sh").unwrap();
+        strip_hook(&mut settings);
+        assert_eq!(settings, json!({"model": "x"}));
+    }
+
+    #[test]
+    fn stripping_keeps_a_shared_entry_and_other_events() {
+        let mut settings = json!({"hooks": {
+            "PreToolUse": [{"matcher": "Bash", "hooks": [
+                {"type": "command", "command": "other"},
+                {"type": "command", "command": "/h/code-scope-guard.sh"},
+            ]}],
+            "Stop": [],
+        }});
+        strip_hook(&mut settings);
+        assert_eq!(commands(&settings), ["other"]);
+        assert!(settings["hooks"]["Stop"].is_array());
+    }
+
+    #[test]
+    fn settings_keys_keep_their_order() {
+        let mut settings: Value = serde_json::from_str(r#"{"z": 1, "a": 2}"#).unwrap();
+        add_hook(&mut settings, "c").unwrap();
+        let text = settings.to_string();
+        assert!(text.find("\"z\"").unwrap() < text.find("\"a\"").unwrap());
+    }
+
+    #[test]
+    fn strip_block_removes_only_complete_blocks() {
+        assert_eq!(strip_block("a\nB\nx\nE\nb\n", "B", "E"), "a\nb\n");
+        assert_eq!(strip_block("a\r\nB\r\nE\r\nb", "B", "E"), "a\r\nb");
+        assert_eq!(strip_block("a\nB\nkeep\n", "B", "E"), "a\nB\nkeep\n");
+        assert_eq!(strip_block("no block", "B", "E"), "no block");
+    }
+
+    #[test]
+    fn install_files_can_be_repeated_and_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        fs::create_dir_all(paths.settings.parent().unwrap()).unwrap();
+        fs::write(&paths.settings, r#"{"model": "x"}"#).unwrap();
+        fs::write(&paths.memory, "mine").unwrap();
+        fs::write(
+            &paths.rc_files[0],
+            format!("before\n{RC_BEGIN}\nalias csm=code-scope-mcp\n{RC_END}\nafter\n"),
+        )
+        .unwrap();
+
+        for _ in 0..2 {
+            write_hook(&paths.hook).unwrap();
+            add_hook_to_settings(&paths).unwrap();
+            add_memory(&paths.memory).unwrap();
+        }
+        let settings = read_settings(&paths.settings).unwrap().unwrap();
+        assert_eq!(commands(&settings).len(), 1);
+        let memory = fs::read_to_string(&paths.memory).unwrap();
+        assert_eq!(memory.matches(MEMORY_BEGIN).count(), 1);
+        assert!(memory.starts_with("mine\n"));
+        assert!(paths.hook.exists());
+
+        remove_files(&paths).unwrap();
+        assert!(!paths.hook.exists());
+        assert_eq!(
+            read_settings(&paths.settings).unwrap().unwrap(),
+            json!({"model": "x"})
+        );
+        assert_eq!(fs::read_to_string(&paths.memory).unwrap(), "mine\n");
+        assert_eq!(
+            fs::read_to_string(&paths.rc_files[0]).unwrap(),
+            "before\nafter\n"
+        );
+    }
+
+    #[test]
+    fn invalid_settings_are_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        fs::create_dir_all(paths.settings.parent().unwrap()).unwrap();
+        fs::write(&paths.settings, "{ not json").unwrap();
+        assert!(add_hook_to_settings(&paths).is_err());
+        assert!(remove_files(&paths).is_err());
+        assert_eq!(fs::read_to_string(&paths.settings).unwrap(), "{ not json");
+    }
+
+    #[test]
+    fn remove_files_tolerates_a_clean_home() {
+        let dir = tempfile::tempdir().unwrap();
+        remove_files(&paths(dir.path())).unwrap();
+    }
+
+    #[test]
+    fn binary_owner_follows_its_location() {
+        let cargo = Path::new("/nonexistent-home/.cargo/bin");
+        let owner_of = |exe: &str| owner(Path::new(exe), cargo);
+        assert_eq!(owner_of("/nonexistent-home/.cargo/bin/x"), Owner::Cargo);
+        assert_eq!(owner_of("/usr/bin/x"), Owner::PackageManager);
+        assert_eq!(owner_of("/nonexistent-home/.local/bin/x"), Owner::User);
+    }
+}

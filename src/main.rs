@@ -1,9 +1,10 @@
 //! code-scope-mcp: AST-aware code navigation MCP server over stdio.
 //!
-//! `stdout` is reserved for JSON-RPC traffic. All diagnostics go to `stderr`.
+//! While serving, `stdout` is reserved for JSON-RPC traffic. All diagnostics go
+//! to `stderr`.
 //!
-//! Usage: `code-scope-mcp [ROOT]`. The workspace root defaults to
-//! `$CODE_SCOPE_ROOT`, then the current directory.
+//! Commands are in [`cli`]. `serve [ROOT]` runs the server; the workspace root
+//! defaults to `$CODE_SCOPE_ROOT`, then the current directory.
 //!
 //! Parse results persist in `$CODE_SCOPE_CACHE_DIR`, defaulting to
 //! `$XDG_CACHE_HOME/code-scope-mcp` or `~/.cache/code-scope-mcp`. Set
@@ -11,10 +12,14 @@
 //! `CODE_SCOPE_MAX_FILES` to change how many files a search walks (20000), and
 //! `CODE_SCOPE_CACHE_MB` to change the memory kept for parsed files (512).
 
+use std::ffi::OsString;
+use std::io::IsTerminal;
 use std::path::PathBuf;
 
 use anyhow::Result;
+use code_scope_mcp::cli::{self, Command};
 use code_scope_mcp::index::cache::PersistentStore;
+use code_scope_mcp::install;
 use code_scope_mcp::mcp::{CodeScope, Workspace};
 use rmcp::ServiceExt;
 use tracing_subscriber::EnvFilter;
@@ -29,9 +34,9 @@ fn init_tracing() {
         .init();
 }
 
-fn workspace_root() -> Result<PathBuf> {
-    if let Some(arg) = std::env::args_os().nth(1) {
-        return Ok(arg.into());
+fn workspace_root(arg: Option<PathBuf>) -> Result<PathBuf> {
+    if let Some(arg) = arg {
+        return Ok(arg);
     }
     if let Some(env) = std::env::var_os("CODE_SCOPE_ROOT") {
         return Ok(env.into());
@@ -82,10 +87,30 @@ fn with_persistence(workspace: Workspace) -> Workspace {
     }
 }
 
+fn main() -> Result<()> {
+    let args: Vec<OsString> = std::env::args_os().skip(1).collect();
+    let command = match cli::parse(&args, std::io::stdin().is_terminal()) {
+        Ok(command) => command,
+        Err(message) => {
+            eprintln!("error: {message}\n\n{}", cli::HELP);
+            std::process::exit(2);
+        }
+    };
+    // Only `serve` speaks JSON-RPC, so only it reserves stdout.
+    match command {
+        Command::Help => print!("{}", cli::HELP),
+        Command::Version => println!("code-scope-mcp {}", env!("CARGO_PKG_VERSION")),
+        Command::Install { enforce } => install::install(enforce)?,
+        Command::Uninstall => install::uninstall()?,
+        Command::Serve(root) => serve(root)?,
+    }
+    Ok(())
+}
+
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn serve(root: Option<PathBuf>) -> Result<()> {
     init_tracing();
-    let mut workspace = with_persistence(Workspace::new(workspace_root()?)?);
+    let mut workspace = with_persistence(Workspace::new(workspace_root(root)?)?);
     if let Some(max) = std::env::var("CODE_SCOPE_MAX_FILES")
         .ok()
         .and_then(|v| v.trim().parse::<usize>().ok())

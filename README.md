@@ -73,8 +73,7 @@ Full results for Go, CPython and tokio are in [`BENCHMARKS.md`](BENCHMARKS.md).
 
 ## Usage
 
-Prebuilt binaries for Linux (x86_64), macOS (Apple Silicon) and Windows
-(x86_64) are attached to each
+Prebuilt binaries for Linux (x86_64) and Windows (x86_64) are attached to each
 [release](https://github.com/aeron2k4/code-scope-mcp/releases), with their
 SHA-256 checksums in `SHA256SUMS`. For example, on Linux:
 
@@ -84,35 +83,50 @@ curl -fLo ~/.local/bin/code-scope-mcp \
 chmod +x ~/.local/bin/code-scope-mcp
 ```
 
-The other binaries are `code-scope-mcp-macos` and
-`code-scope-mcp-windows.exe`. On macOS, a binary downloaded by
-a browser also needs `xattr -d com.apple.quarantine code-scope-mcp`. Other
-platforms (Linux ARM, Intel macOS) can build from source.
+The Windows binary is `code-scope-mcp-windows.exe`. Other platforms (macOS, Linux
+ARM) can build from source.
 
 Or build from source:
 
 ```sh
 cargo build --release
-./target/release/code-scope-mcp /path/to/project   # or $CODE_SCOPE_ROOT, or the cwd
+./target/release/code-scope-mcp serve /path/to/project   # or $CODE_SCOPE_ROOT, or the cwd
 ```
 
 ### Claude Code
 
-One script installs the binary, registers it and makes Claude use it, on
-Linux, macOS and Windows (run it in Git Bash, which Claude Code also uses for
-hooks). It needs `curl`, `jq` and `claude`:
+Installing takes two steps. First the binary, on Linux and Windows (run it in
+Git Bash, which Claude Code also uses for hooks). This needs `curl`, not `sudo`:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/aeron2k4/code-scope-mcp/main/scripts/install-claude.sh | bash
+curl -fsSL https://raw.githubusercontent.com/aeron2k4/code-scope-mcp/main/scripts/install.sh | bash
 ```
 
-or, from a clone, `scripts/install-claude.sh`.
+or, from a clone, `scripts/install.sh`. It checks the latest release binary
+against `SHA256SUMS` and saves it as `~/.local/bin/code-scope-mcp`
+(`CODE_SCOPE_BIN_DIR` to change). A marked block in the rc file of your shell
+(bash, zsh or fish) adds the alias `csm`, and that directory to `PATH` if
+missing; both apply to new shells. Options (after `| bash -s --` when piped):
 
-It does three things, all at user scope so they apply to every project:
+```sh
+scripts/install.sh --version v0.1.0   # a specific release
+scripts/install.sh --from-source      # build with cargo instead (needs Rust)
+```
 
-1. Download the latest release binary for the OS to
-   `~/.local/bin/code-scope-mcp` (`CODE_SCOPE_BIN_DIR` to change), check it
-   against `SHA256SUMS`, and register it at user scope as `code-scope` with
+Where no prebuilt binary exists (macOS, Linux ARM) the script builds from source
+if `cargo` is installed. CI does not run on macOS.
+
+Then set up Claude Code. This needs `claude`, and `jq` for the hook (on Windows,
+`winget install jqlang.jq`):
+
+```sh
+csm install                # or code-scope-mcp install, in a shell opened before the alias
+```
+
+`csm` alone shows the help. `csm install` does three things, all at user scope
+so they apply to every project:
+
+1. Register the binary as `code-scope`, run as `code-scope-mcp serve`, with
    `"alwaysLoad": true`, so its tools are in the model's tool list from the start instead of deferred behind ToolSearch.
    With no root argument the server uses the session's working directory.
 2. Add a `PreToolUse` hook (`~/.claude/hooks/code-scope-guard.sh`, wired in
@@ -137,25 +151,24 @@ It does three things, all at user scope so they apply to every project:
    The hook is [`scripts/code-scope-guard.sh`](scripts/code-scope-guard.sh).
 3. Add a short instruction block to `~/.claude/CLAUDE.md`.
 
-Restart Claude Code afterwards. Re-running the script is safe and updates the
-binary. Options (after `| bash -s --` when piped):
+Restart Claude Code afterwards. Both commands are safe to re-run. To upgrade, run
+the script for the new binary, then `csm install` for the hook that came with it.
 
 ```sh
-scripts/install-claude.sh --version v0.1.0   # a specific release
-scripts/install-claude.sh --from-source      # build with cargo instead (needs Rust)
-scripts/install-claude.sh --no-enforce       # step 1 only, no hook or CLAUDE.md block
-scripts/install-claude.sh --uninstall        # undo steps 1–3 and remove the binary
+csm install --no-enforce   # step 1 only, no hook or CLAUDE.md block
+csm uninstall              # undo steps 1–3, remove the shell block and the binary
 ```
 
-Where no prebuilt binary exists (Linux ARM, Intel macOS) the script builds from
-source if `cargo` is installed. On Windows, install `jq` with
-`winget install jqlang.jq`.
+`csm uninstall` keeps the parse cache (`~/.cache/code-scope-mcp`). A binary from
+`cargo install` or a package manager is left for that tool to remove, and on
+Windows a running binary cannot be deleted: it says so, and you delete it after
+closing Claude Code.
 
 To register manually instead:
 
 ```sh
 claude mcp add-json code-scope \
-  '{"type": "stdio", "command": "/abs/path/to/code-scope-mcp", "args": ["/path/to/project"], "alwaysLoad": true}'
+  '{"type": "stdio", "command": "/abs/path/to/code-scope-mcp", "args": ["serve", "/path/to/project"], "alwaysLoad": true}'
 ```
 
 ## Releasing
@@ -169,9 +182,9 @@ git push origin v0.2.0
 
 The release workflow checks that the tag matches `Cargo.toml`, runs the tests on
 Linux and publishes a GitHub Release with the Linux binary, `SHA256SUMS` and
-generated notes, without waiting for other runners. The macOS and Windows
-binaries are then built and added to that release, so they appear later. Until
-then, downloading them fails, including through `scripts/install-claude.sh`.
+generated notes, without waiting for the Windows runner. The Windows binary is
+then built and added to that release, so it appears later. Until then,
+downloading it fails, including through `scripts/install.sh`.
 
 ## Development
 

@@ -220,6 +220,7 @@ fn startup_ms(root: &Path) -> f64 {
     for _ in 0..STARTUP_ROUNDS {
         let start = Instant::now();
         let mut child = Command::new(env!("CARGO_BIN_EXE_code-scope-mcp"))
+            .arg("serve")
             .arg(root)
             .env("CODE_SCOPE_NO_CACHE", "1")
             .env("CODE_SCOPE_LOG", "off")

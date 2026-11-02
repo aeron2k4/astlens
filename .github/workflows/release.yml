@@ -36,7 +36,7 @@ jobs:
           fi
 
   # Linux decides the release: once its tests and build pass, the release goes
-  # out without waiting for macOS and Windows runners, which can queue for long.
+  # out without waiting for the Windows runner.
   linux:
     needs: check
     runs-on: ubuntu-22.04 # older glibc, so the binary runs on more distros
@@ -82,20 +82,13 @@ jobs:
             --generate-notes \
             --verify-tag
 
-  # Each OS adds its binary to the published release when it finishes. A failure
-  # here leaves the release without that binary.
-  other:
+  # Added to the published release when it finishes. A failure here leaves the
+  # release without the Windows binary.
+  windows:
     needs: release
-    name: add binary (${{ matrix.target }})
     permissions:
       contents: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { target: aarch64-apple-darwin, os: macos-latest, name: macos }
-          - { target: x86_64-pc-windows-msvc, os: windows-latest, name: windows }
-    runs-on: ${{ matrix.os }}
+    runs-on: windows-latest
     steps:
       # The token is only for the last step, not for the build.
       - uses: actions/checkout@v7
@@ -103,40 +96,20 @@ jobs:
           ref: ${{ env.TAG }}
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
-      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - run: cargo build --release --locked
       - name: Add binary and checksum to the release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          ext=""
-          if [ "$RUNNER_OS" = Windows ]; then ext=.exe; fi
-          asset="code-scope-mcp-${{ matrix.name }}$ext"
-          cp "target/${{ matrix.target }}/release/code-scope-mcp$ext" "$asset"
+          asset=code-scope-mcp-windows.exe
+          cp target/release/code-scope-mcp.exe "$asset"
           gh release upload "$TAG" "$asset" --clobber
 
-          if command -v sha256sum >/dev/null; then hash=$(sha256sum "$asset" | cut -d' ' -f1)
-          else hash=$(shasum -a 256 "$asset" | cut -d' ' -f1)
-          fi
-          line="$hash  $asset"
-
-          # Both OSes rewrite SHA256SUMS and may finish together, overwriting
-          # each other: repeat until our line is really in the published file.
-          for attempt in 1 2 3 4 5 6 7 8; do
-            if gh release download "$TAG" --pattern SHA256SUMS --clobber; then
-              if grep -Fxq "$line" SHA256SUMS; then exit 0; fi
-              grep -v "  $asset\$" SHA256SUMS > sums.new || true
-              echo "$line" >> sums.new
-              mv sums.new SHA256SUMS
-              gh release upload "$TAG" SHA256SUMS --clobber || true
-            fi
-            sleep $((RANDOM % 15 + 5))
-          done
-          echo "::error::could not add $asset to SHA256SUMS"
-          exit 1
+          gh release download "$TAG" --pattern SHA256SUMS --clobber
+          grep -v "  $asset\$" SHA256SUMS > sums.new || true
+          echo "$(sha256sum "$asset" | cut -d' ' -f1)  $asset" >> sums.new
+          mv sums.new SHA256SUMS
+          gh release upload "$TAG" SHA256SUMS --clobber
