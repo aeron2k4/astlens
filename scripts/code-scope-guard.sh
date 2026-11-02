@@ -17,9 +17,15 @@
 # Bash parsing is best effort: commands it cannot see into (eval, scripts,
 # find -exec, xargs, "$(cat x.rs)" inside quotes) and other programs that can
 # print a file (python, xxd, cut) are allowed.
-input=$(cat)
-tool=$(jq -r '.tool_name // empty' <<<"$input")
-cwd=$(jq -r '.cwd // empty' <<<"$input")
+
+# Byte semantics: in a UTF-8 locale ${s:i:1} is O(i), which makes lex quadratic.
+export LC_ALL=C
+
+# One jq for all fields, NUL-separated since a command can span lines.
+for field in tool cwd cmd file limit path glob type; do
+  IFS= read -r -d '' "$field"
+done < <(jq -j '[.tool_name, .cwd] + (.tool_input | [.command, .file_path, .limit, .path, .glob, .type])
+  | map(((. // "") | tostring) + "\u0000") | add')
 [ -n "$cwd" ] || cwd=$PWD
 
 EXTS='rs|py|pyi|js|jsx|mjs|cjs|ts|mts|cts|tsx|go|c|h|cc|cpp|cxx|hh|hpp|hxx|java|cs'
@@ -28,10 +34,17 @@ CODE_EXT="\\.($EXTS)\$"
 CODE_GLOB="(^|[.,{])($EXTS)([,}]|\$)"
 CODE_TYPES='^(rust|py|python|js|jsx|ts|tsx|typescript|go|c|cpp|java|cs|csharp)$'
 
+# Quick checks that spare most commands the word-by-word parse: a search or
+# reader program as a whole word and, for readers, a source path or a glob.
+BOUND='[^[:alnum:]_.-]'
+SEARCH_CMD="(^|$BOUND)(grep|egrep|fgrep|ugrep|rg)($BOUND|\$)"
+READ_CMD="(^|$BOUND)(cat|tac|nl|more|less|most|bat|batcat|head|tail|sed|awk|gawk|mawk|nawk|read|smart)($BOUND|\$)"
+CODE_HINT="[*?[{]|\\.($EXTS)($BOUND|\$)"
+
 MAX_LINES=${CODE_SCOPE_MAX_READ_LINES:-300}
 [[ "$MAX_LINES" =~ ^[0-9]+$ ]] || MAX_LINES=300
 
-READ_HINT="Use code-scope MCP tools instead (load with ToolSearch \"select:mcp__code-scope__get_file_outline,mcp__code-scope__read_symbol,mcp__code-scope__search_symbols,mcp__code-scope__read_file_pruned\"): get_file_outline / read_symbol / read_file_pruned. To rewrite a whole function or class use replace_symbol, to add one use insert_symbol. To see a few lines, limit the output to at most $MAX_LINES lines, e.g. sed -n 10,60p."
+READ_HINT='Use code-scope MCP tools instead (load with ToolSearch "select:mcp__code-scope__get_file_outline,mcp__code-scope__read_symbol,mcp__code-scope__search_symbols,mcp__code-scope__read_file_pruned"): get_file_outline / read_symbol / read_file_pruned. To rewrite a whole function or class use replace_symbol, to add one use insert_symbol.'
 
 GREP_HINT='Use code-scope MCP tools instead (load with ToolSearch "select:mcp__code-scope__search_text,mcp__code-scope__find_references"): search_text for a literal or regex (.gitignore-aware, shows the enclosing symbol; takes dir), find_references for uses of a symbol. Searching non-code files stays allowed: pass a non-code path, or a filter such as --include="*.md" / -g "*.md" / type md.'
 
@@ -73,7 +86,7 @@ path_has_code() {
 # Split a shell command into words. Unquoted | becomes the word "|", other
 # unquoted separators (; & ( ) ` newline, $( ) become ";". Quotes are removed.
 lex() {
-  local s=$1 i c q='' w='' n=${#1} has=0 d rest line
+  local s=$1 i c q='' w='' n=${#1} has=0 d line
   local -a heredocs=()
   WORDS=()
   for ((i = 0; i < n; i++)); do
@@ -101,16 +114,15 @@ lex() {
         fi
         # Heredoc bodies start after this newline; they are data, not commands.
         if [ "$c" = $'\n' ] && ((${#heredocs[@]})); then
-          rest=${s:i+1}
-          for d in "${heredocs[@]}"; do
-            while [ -n "$rest" ]; do
-              line=${rest%%$'\n'*}
-              if [[ "$rest" == *$'\n'* ]]; then rest=${rest#*$'\n'}; else rest=''; fi
-              [ "${line#"${line%%[!$'\t']*}"}" = "$d" ] && break
+          {
+            for d in "${heredocs[@]}"; do
+              while IFS= read -r line; do
+                ((i += ${#line} + 1))
+                [ "${line#"${line%%[!$'\t']*}"}" = "$d" ] && break
+              done
             done
-          done
+          } <<<"${s:i+1}"
           heredocs=()
-          i=$((n - ${#rest} - 1))
         fi
         ;;
       '<')
@@ -369,7 +381,10 @@ limited_output() {
       ;;
     sed)
       parse_sed
-      ((SED_QUIET)) && ((${#SCRIPTS[@]} == 1)) || return 1
+      ((${#SCRIPTS[@]} == 1)) || return 1
+      # sed 10q prints the first 10 lines.
+      [[ "${SCRIPTS[0]}" =~ ^([0-9]+)q$ ]] && { small "${BASH_REMATCH[1]}"; return; }
+      ((SED_QUIET)) || return 1
       [[ "${SCRIPTS[0]}" =~ ^([0-9]+)(,([0-9]+))?p$ ]] || return 1
       local first=$((10#${BASH_REMATCH[1]})) last=${BASH_REMATCH[3]:-${BASH_REMATCH[1]}}
       ((10#$last >= first)) && small $((10#$last - first + 1))
@@ -396,8 +411,7 @@ check_read() {
   shift 3
   parse_redirects "$@"
   ((STDOUT_GONE)) && return 1
-  local stdin_file=$INPUT
-  local -a saved=("${ARGS[@]}") inputs=()
+  local -a inputs=()
   case "$prog" in
     sed)
       parse_sed
@@ -424,13 +438,12 @@ check_read() {
       done
       ;;
   esac
-  [ -n "$stdin_file" ] && inputs+=("$stdin_file")
+  [ -n "$INPUT" ] && inputs+=("$INPUT")
   for a in "${inputs[@]}"; do
     is_code_file "$a" "$dir" && code=1
   done
   ((code)) || return 1
 
-  ARGS=("${saved[@]}")
   limited_output "$prog" && return 1
 
   # Piped: fine when the next command only counts, hashes or limits the output.
@@ -470,9 +483,7 @@ command_argv() {
 }
 
 check_bash() {
-  local cmd
-  cmd=$(jq -r '.tool_input.command // empty' <<<"$input")
-  [[ "$cmd" =~ (grep|rg|cat|tac|nl|more|less|most|bat|head|tail|sed|awk|read|smart) ]] || exit 0
+  [[ "$cmd" =~ $SEARCH_CMD ]] || { [[ "$cmd" =~ $READ_CMD ]] && [[ "$cmd" =~ $CODE_HINT ]]; } || exit 0
   lex "$cmd"
 
   local dir=$cwd piped=0 i=0 n=${#WORDS[@]}
@@ -500,11 +511,11 @@ check_bash() {
           ;;
         cat | tac | nl | more | less | most | bat | batcat | head | tail | sed | awk | gawk | mawk | nawk)
           check_read "$dir" "$i" "${argv[0]##*/}" "${argv[@]:1}" &&
-            deny "Reading source code with ${argv[0]##*/} is blocked. $READ_HINT"
+            deny "Reading source code with ${argv[0]##*/} is blocked. $READ_HINT To see a few lines, limit the output to at most $MAX_LINES lines, e.g. sed -n 10,60p."
           ;;
         read | smart)
           ((under_rtk)) && check_read "$dir" "$i" "${argv[0]}" "${argv[@]:1}" &&
-            deny "Reading source code with rtk ${argv[0]} is blocked. $READ_HINT"
+            deny "Reading source code with rtk ${argv[0]} is blocked. $READ_HINT To see a few lines, use rtk read --head-lines with at most $MAX_LINES."
           ;;
       esac
     fi
@@ -517,21 +528,13 @@ check_bash() {
 
 case "$tool" in
   Read)
-    f=$(jq -r '.tool_input.file_path // empty' <<<"$input")
-    limit=$(jq -r '.tool_input.limit // empty' <<<"$input")
-    [[ "$f" =~ $CODE_EXT ]] || exit 0
-    inside_workspace "$(absolute "$f" "$cwd")" || exit 0
-    max=$MAX_LINES
+    [[ "$file" =~ $CODE_EXT ]] || exit 0
+    inside_workspace "$(absolute "$file" "$cwd")" || exit 0
     # Without a limit, Read returns up to 2000 lines even from an offset.
-    if [[ "$limit" =~ ^[0-9]+$ ]] && ((limit <= max)); then
-      exit 0
-    fi
-    deny "Whole-file Read of source code (or a Read without a limit of at most $max lines) is blocked. Use code-scope MCP tools instead (load with ToolSearch \"select:mcp__code-scope__get_file_outline,mcp__code-scope__read_symbol,mcp__code-scope__search_symbols,mcp__code-scope__read_file_pruned\"): get_file_outline / read_symbol / read_file_pruned for $f. To rewrite a whole function or class use replace_symbol, to add one use insert_symbol; for a smaller Edit, Read only the needed lines with offset and a limit of at most $max."
+    small "$limit" && exit 0
+    deny "Whole-file Read of $file (or a Read without a limit of at most $MAX_LINES lines) is blocked. $READ_HINT For a smaller Edit, Read only the needed lines with offset and a limit of at most $MAX_LINES."
     ;;
   Grep)
-    path=$(jq -r '.tool_input.path // empty' <<<"$input")
-    glob=$(jq -r '.tool_input.glob // empty' <<<"$input")
-    type=$(jq -r '.tool_input.type // empty' <<<"$input")
     abs=$(absolute "${path:-.}" "$cwd")
     inside_workspace "$abs" || exit 0
     if [ -f "$abs" ]; then

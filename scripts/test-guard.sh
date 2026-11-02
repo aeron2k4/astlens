@@ -7,6 +7,7 @@ trap 'rm -rf "$WS"' EXIT
 mkdir -p "$WS/src"
 echo 'fn main() {}' >"$WS/src/main.rs"
 echo 'fn a() {}' >"$WS/src/a.rs"
+echo 'fn b() {}' >"$WS/src/tiếng việt.rs"
 echo '# hi' >"$WS/README.md"
 fail=0
 
@@ -70,6 +71,10 @@ awk -F: '{print $1}' src/main.rs
 cat src/main.rs | grep foo
 cat src/main.rs | head -n 2000
 cat src/main.rs | less
+"cat" "src/main.rs"
+/bin/cat src/main.rs
+cat "src/tiếng việt.rs"
+sed 999q src/main.rs
 CASES
 
 while IFS= read -r c; do [ -n "$c" ] && bash_cmd allow "$c"; done <<'CASES'
@@ -108,6 +113,11 @@ echo cat src/main.rs
 echo src/main.rs | head -1
 git log --oneline | head -5
 cargo test 2>&1 | tail -20
+sed 10q src/main.rs
+concat src/main.rs
+head-to-head src/main.rs
+cargo build src/main.rs
+head -n 50 "src/tiếng việt.rs"
 CASES
 
 # Heredoc bodies are data: the commands inside must not count.
@@ -117,6 +127,10 @@ grep -rn foo src
 END"
 bash_cmd deny "cat > notes.md <<END
 text
+END
+cat src/main.rs"
+bash_cmd deny "cat > notes.md <<END
+dòng tiếng Việt với *
 END
 cat src/main.rs"
 bash_cmd allow "cat <<-END
