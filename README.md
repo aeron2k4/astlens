@@ -90,7 +90,7 @@ Or build from source:
 
 ```sh
 cargo build --release
-./target/release/code-scope-mcp serve /path/to/project   # or $CODE_SCOPE_ROOT, or the cwd
+./target/release/code-scope-mcp --serve /path/to/project   # or $CODE_SCOPE_ROOT, or the cwd
 ```
 
 ### Claude Code
@@ -120,13 +120,13 @@ Then set up Claude Code. This needs `claude`, and `jq` for the hook (on Windows,
 `winget install jqlang.jq`):
 
 ```sh
-csm install                # or code-scope-mcp install, in a shell opened before the alias
+csm --install              # or code-scope-mcp --install, in a shell opened before the alias
 ```
 
-`csm` alone shows the help. `csm install` does three things, all at user scope
+`csm` alone shows the help. `csm --install` (or `csm -i`) does three things, all at user scope
 so they apply to every project:
 
-1. Register the binary as `code-scope`, run as `code-scope-mcp serve`, with
+1. Register the binary as `code-scope`, run as `code-scope-mcp --serve`, with
    `"alwaysLoad": true`, so its tools are in the model's tool list from the start instead of deferred behind ToolSearch.
    With no root argument the server uses the session's working directory.
 2. Add a `PreToolUse` hook (`~/.claude/hooks/code-scope-guard.sh`, wired in
@@ -152,14 +152,14 @@ so they apply to every project:
 3. Add a short instruction block to `~/.claude/CLAUDE.md`.
 
 Restart Claude Code afterwards. Both commands are safe to re-run. To upgrade, run
-the script for the new binary, then `csm install` for the hook that came with it.
+the script for the new binary, then `csm --install` for the hook that came with it.
 
 ```sh
-csm install --no-enforce   # step 1 only, no hook or CLAUDE.md block
-csm uninstall              # undo steps 1–3, remove the shell block and the binary
+csm --install --no-enforce   # step 1 only, no hook or CLAUDE.md block
+csm --uninstall              # undo steps 1–3, remove the shell block and the binary
 ```
 
-`csm uninstall` keeps the parse cache (`~/.cache/code-scope-mcp`). A binary from
+`csm --uninstall` keeps the parse cache (`~/.cache/code-scope-mcp`). A binary from
 `cargo install` or a package manager is left for that tool to remove, and on
 Windows a running binary cannot be deleted: it says so, and you delete it after
 closing Claude Code.
@@ -168,7 +168,7 @@ To register manually instead:
 
 ```sh
 claude mcp add-json code-scope \
-  '{"type": "stdio", "command": "/abs/path/to/code-scope-mcp", "args": ["serve", "/path/to/project"], "alwaysLoad": true}'
+  '{"type": "stdio", "command": "/abs/path/to/code-scope-mcp", "args": ["--serve", "/path/to/project"], "alwaysLoad": true}'
 ```
 
 ## Releasing

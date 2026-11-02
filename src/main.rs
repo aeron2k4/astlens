@@ -3,7 +3,7 @@
 //! While serving, `stdout` is reserved for JSON-RPC traffic. All diagnostics go
 //! to `stderr`.
 //!
-//! Commands are in [`cli`]. `serve [ROOT]` runs the server; the workspace root
+//! Commands are in [`cli`]. `--serve [ROOT]` runs the server; the workspace root
 //! defaults to `$CODE_SCOPE_ROOT`, then the current directory.
 //!
 //! Parse results persist in `$CODE_SCOPE_CACHE_DIR`, defaulting to
@@ -96,10 +96,10 @@ fn main() -> Result<()> {
             std::process::exit(2);
         }
     };
-    // Only `serve` speaks JSON-RPC, so only it reserves stdout.
+    // Only `--serve` speaks JSON-RPC, so only it reserves stdout.
     match command {
         Command::Help => print!("{}", cli::HELP),
-        Command::Version => println!("code-scope-mcp {}", env!("CARGO_PKG_VERSION")),
+        Command::Version => println!("v{}", env!("CARGO_PKG_VERSION")),
         Command::Install { enforce } => install::install(enforce)?,
         Command::Uninstall => install::uninstall()?,
         Command::Serve(root) => serve(root)?,

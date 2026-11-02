@@ -1,4 +1,4 @@
-//! `install` and `uninstall`: set this binary up in Claude Code at user scope.
+//! `--install` and `--uninstall`: set this binary up in Claude Code at user scope.
 //!
 //! Install registers the MCP server, writes the guard hook and adds a short
 //! instruction block to `CLAUDE.md`. Uninstall undoes that, removes the block
@@ -136,7 +136,7 @@ pub fn install(enforce: bool) -> Result<()> {
     let config = json!({
         "type": "stdio",
         "command": native_path(&exe),
-        "args": ["serve"],
+        "args": ["--serve"],
         "alwaysLoad": true,
     });
     let output = claude(&[

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install the code-scope-mcp binary and the shell alias csm. Runs on Linux and
 # Windows (in Git Bash), which needs curl, and on macOS, which needs cargo: there
-# are no macOS binaries. Afterwards, `csm install` sets up Claude Code.
+# are no macOS binaries. Afterwards, `csm --install` sets up Claude Code.
 #
 #   scripts/install.sh                   download the latest release
 #   scripts/install.sh --version v0.1.0  download that release instead
@@ -11,7 +11,7 @@
 #
 # The binary goes to ~/.local/bin (CODE_SCOPE_BIN_DIR to change), no sudo needed.
 # A marked block in the rc file of $SHELL adds the alias, and that directory to
-# PATH if missing. `csm uninstall` removes both.
+# PATH if missing. `csm --uninstall` removes both.
 set -euo pipefail
 
 REPO=aeron2k4/code-scope-mcp
@@ -159,5 +159,5 @@ fi
 add_to_shell "$BIN_DIR"
 
 log "Done. To set up Claude Code, or update its hook after an upgrade, run now:"
-log "  $BIN install"
-log "In a new shell, the same is: csm install"
+log "  $BIN --install"
+log "In a new shell, the same is: csm --install"
