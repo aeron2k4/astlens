@@ -1,0 +1,37 @@
+# Contributing
+
+## Development
+
+```sh
+cargo test
+cargo fmt
+cargo clippy --all-targets -- -D warnings
+scripts/test-guard.sh   # table test for the hook; needs jq
+```
+
+`cargo bench --bench report` measures this crate's own `src/`. To regenerate
+[`BENCHMARKS.md`](BENCHMARKS.md), set `BENCH_CORPORA` to comma-separated
+`name=directory` pairs; the bench stops if a directory does not exist. Paths
+vary by system, for example:
+
+```sh
+BENCH_CORPORA="Go stdlib=$(go env GOROOT)/src,\
+CPython stdlib=$(python3 -c 'import sysconfig; print(sysconfig.get_path("stdlib"))'),\
+tokio (Rust)=/path/to/tokio" \
+BENCH_OUT=BENCHMARKS.md cargo bench --bench report
+```
+
+## Releasing
+
+Bump `version` in `Cargo.toml`, commit, then push a matching tag:
+
+```sh
+git tag -a v0.4.0 -m "astlens 0.4.0"
+git push origin v0.4.0
+```
+
+The release workflow checks that the tag matches `Cargo.toml`, runs the tests on
+Linux and publishes a GitHub Release with the Linux binary, `SHA256SUMS` and
+generated notes, without waiting for the Windows runner. The Windows binary is
+then built and added to that release, so it appears later. Until then,
+downloading it fails, including through `scripts/install.sh`.

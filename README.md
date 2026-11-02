@@ -7,52 +7,6 @@ AI coding agents can explore large codebases without reading whole files.
 Supported languages: Rust, Python, JavaScript, TypeScript/TSX, Go, C, C++, Java,
 C#. `.h` headers are parsed as C.
 
-## Tools
-
-| Tool               | Purpose                                                                          |
-| ------------------ | -------------------------------------------------------------------------------- |
-| `get_file_outline` | Symbols in a file with signatures and line ranges                                |
-| `search_symbols`   | Ranked name search across the workspace (exact > prefix > substring)             |
-| `read_symbol`      | Exact source of one definition, line-numbered                                    |
-| `replace_symbol`   | Rewrite or delete one definition without reading the file; rejects syntax errors |
-| `insert_symbol`    | Add code after/before a symbol or at the end of a file; rejects syntax errors   |
-| `read_file_pruned` | File text within `max_tokens`: full → bodies elided → outline → truncated        |
-| `find_references`  | Uses of a symbol from identifier tokens (comments and strings skipped)           |
-| `search_text`      | Literal or regex search over files, honouring `.gitignore`                       |
-| `list_files`       | Files under a directory, honouring `.gitignore`                                  |
-| `changed_symbols`  | Symbols added/modified/removed by uncommitted changes or since a revision        |
-| `git_status`       | Working-tree status                                                              |
-
-Hits are one per line. `find_references` prints `path:line:col: text`, with
-`[definition]` on definitions when asked for; `search_text` prints
-`path:line: text`. Either adds `[in Symbol]` when the hit lies inside a symbol
-(top-level code has none):
-
-```text
-src/lib.rs:42:9: load();  [in Config::reload]
-src/lib.rs:7:12: pub fn load() -> Self {  [definition]  [in Config]
-README.md:3: Call load() once at startup.
-```
-
-Files are parsed lazily the first time they are requested, so nothing is
-indexed at startup. A parse records a file's symbols and the offsets of its
-identifier tokens, and is cached at two levels:
-
-- **in memory**, reused while a file's modification time and size are unchanged,
-  within a memory budget (`ASTLENS_CACHE_MB`);
-- **on disk**, in an LMDB (memory-mapped) store keyed by the file's git blob
-  hash, so unchanged files are not re-parsed after a restart. Entries of files
-  deleted from the workspace are dropped in the background at startup.
-
-| Variable               | Effect                                                                  |
-| ---------------------- | ----------------------------------------------------------------------- |
-| `ASTLENS_ROOT`         | Workspace root when no argument is given                                |
-| `ASTLENS_CACHE_DIR`    | Store location (default `$XDG_CACHE_HOME/astlens` or `~/.cache/astlens`) |
-| `ASTLENS_NO_CACHE`     | Set to `1` to keep the cache in memory only                             |
-| `ASTLENS_CACHE_MB`     | Memory kept for parsed files, least recently used evicted first (default 512) |
-| `ASTLENS_MAX_FILES`    | Files walked per workspace-wide search (default 20000); output notes when the limit is hit |
-| `ASTLENS_LOG`          | Log filter, e.g. `debug` (stderr only)                                  |
-
 ## Performance
 
 On the Go 1.27.3 standard library (8,236 source files, 82 MB), with a warm cache:
@@ -71,50 +25,22 @@ On the Go 1.27.3 standard library (8,236 source files, 82 MB), with a warm cache
 
 Full results for Go, CPython and tokio are in [`BENCHMARKS.md`](BENCHMARKS.md).
 
-## Usage
+## Installation
 
-Prebuilt binaries for Linux (x86_64) and Windows (x86_64) are attached to each
-[release](https://github.com/aeron2k4/astlens/releases), with their
-SHA-256 checksums in `SHA256SUMS`. For example, on Linux:
-
-```sh
-curl -fLo ~/.local/bin/astlens \
-  https://github.com/aeron2k4/astlens/releases/latest/download/astlens-linux
-chmod +x ~/.local/bin/astlens
-```
-
-The Windows binary is `astlens-windows.exe`. Other platforms (macOS, Linux
-ARM) can build from source.
-
-Or build from source:
-
-```sh
-cargo build --release
-./target/release/astlens --serve /path/to/project   # or $ASTLENS_ROOT, or the cwd
-```
-
-### Claude Code
-
-Installing takes two steps. First the binary, on Linux and Windows (run it in
-Git Bash, which Claude Code also uses for hooks). This needs `curl`, not `sudo`:
+Installing takes two steps, on Linux and Windows x86_64 (run it in Git Bash on
+Windows). First the binary, which needs `curl`, not `sudo`:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/aeron2k4/astlens/main/scripts/install.sh | bash
 ```
 
-or, from a clone, `scripts/install.sh`. It checks the latest release binary
-against `SHA256SUMS` and saves it as `~/.local/bin/astlens`
-(`ASTLENS_BIN_DIR` to change). A marked block in the rc file of your shell
-(bash, zsh or fish) adds that directory to `PATH` if missing, for new shells.
-Options (after `| bash -s --` when piped):
+It checks the latest release against `SHA256SUMS`, saves the binary as
+`~/.local/bin/astlens` (`ASTLENS_BIN_DIR` to change) and adds that directory to
+`PATH` if missing. To install a specific release:
 
 ```sh
-scripts/install.sh --version v0.1.0   # a specific release
-scripts/install.sh --from-source      # build with cargo instead (needs Rust)
+curl -fsSL https://raw.githubusercontent.com/aeron2k4/astlens/main/scripts/install.sh | bash -s -- --version v0.4.0
 ```
-
-Where no prebuilt binary exists (macOS, Linux ARM) the script builds from source
-if `cargo` is installed. CI does not run on macOS.
 
 Then set up Claude Code. This needs `claude`, and `jq` for the hook (on Windows,
 `winget install jqlang.jq`):
@@ -123,89 +49,74 @@ Then set up Claude Code. This needs `claude`, and `jq` for the hook (on Windows,
 astlens --install
 ```
 
-`astlens` alone shows the help. `astlens --install` (or `astlens -i`) does three things, all at user scope
-so they apply to every project:
+Restart Claude Code afterwards. To upgrade, run both steps again.
 
-1. Register the binary as `astlens`, run as `astlens --serve`, with
-   `"alwaysLoad": true`, so its tools are in the model's tool list from the start instead of deferred behind ToolSearch.
-   With no root argument the server uses the session's working directory.
-2. Add a `PreToolUse` hook (`~/.claude/hooks/astlens-guard.sh`, wired in
-   `~/.claude/settings.json`) that points Claude to the astlens tools:
-   - denies whole-file `Read` of source files in the session's workspace; a
-     `Read` with a `limit` of at most 300 lines (`ASTLENS_MAX_READ_LINES`)
-     is still allowed, because `Edit` needs a prior `Read`;
-   - denies searches that may cover those files inside the session's
-     workspace, both the `Grep` tool and `grep`/`egrep`/`fgrep`/`ugrep`/`rg`/`git
-     grep` in Bash (use `search_text` / `find_references`). Searching a non-code
-     path, with a non-code filter such as `--include='*.md'` / `-g '*.md'`,
-     piped input (`cargo test | grep FAILED`) or outside the workspace is
-     allowed. Bash parsing is best effort: `eval`, scripts, `find -exec` and
-     `xargs` are not inspected.
-   - denies reading those files through Bash: `cat`, `tac`, `nl`, `more`, `less`,
-     `most`, `bat`, `head`, `tail`, `sed`, `awk`, `rtk read` and `rtk smart`.
-     Output limited to at most 300 lines (`head -n 50`, `sed -n 1,50p`,
-     `rtk read --head-lines 50`), sent to a file, counted or hashed
-     (`cat x.rs | wc -l`), and `sed -i` are allowed. Other programs that can
-     print a file (`python`, `xxd`, `cut`) are not inspected.
+### What `--install` changes
 
-   The hook is [`scripts/astlens-guard.sh`](scripts/astlens-guard.sh).
-3. Add a short instruction block to `~/.claude/CLAUDE.md`.
+All of it is at user scope, so it applies to every project:
 
-Restart Claude Code afterwards. Both commands are safe to re-run. To upgrade, run
-the script for the new binary, then `astlens --install` for the hook that came with it.
+- Registers the MCP server as `astlens`, with its tools always loaded.
+- Writes the hook `~/.claude/hooks/astlens-guard.sh` and wires it in
+  `~/.claude/settings.json`.
+- Adds a short instruction block to `~/.claude/CLAUDE.md`.
 
-```sh
-astlens --install --no-enforce   # step 1 only, no hook or CLAUDE.md block
-astlens --uninstall              # undo steps 1–3, remove the shell block and the binary
-```
+The hook blocks Claude from reading or searching source files in the session's
+workspace the usual way, and points it to the astlens tools instead. It denies
+whole-file `Read`, the `Grep` tool, and commands such as `cat`, `grep` and `rg`
+on those files. A `Read` or command output limited to 300 lines is still allowed,
+as are non-code files and paths outside the workspace.
 
-`astlens --uninstall` keeps the parse cache (`~/.cache/astlens`). A binary from
-`cargo install` or a package manager is left for that tool to remove, and on
-Windows a running binary cannot be deleted: it says so, and you delete it after
-closing Claude Code.
+`astlens --install --no-enforce` registers the MCP server only, with no hook or
+instruction block.
 
-To register manually instead:
+## Usage
 
-```sh
-claude mcp add-json astlens \
-  '{"type": "stdio", "command": "/abs/path/to/astlens", "args": ["--serve", "/path/to/project"], "alwaysLoad": true}'
-```
+Once installed, Claude Code starts the server itself, using the session's working
+directory as the workspace root.
 
-## Releasing
+| Command                          | Effect                                                   |
+| -------------------------------- | -------------------------------------------------------- |
+| `astlens -i`, `--install`        | Set up Claude Code: MCP server, hook, CLAUDE.md block    |
+| `astlens --install --no-enforce` | Register the MCP server only                             |
+| `astlens -u`, `--uninstall`      | Undo `--install`, remove the `PATH` entry and the binary |
+| `astlens -s`, `--serve [ROOT]`   | Run the server over stdio                                |
+| `astlens -h`, `--help`           | Show the help                                            |
+| `astlens -v`, `--version`        | Show the version                                         |
 
-Bump `version` in `Cargo.toml`, commit, then push a matching tag:
+`--uninstall` keeps the parse cache in `~/.cache/astlens`.
 
-```sh
-git tag -a v0.2.0 -m "astlens 0.2.0"
-git push origin v0.2.0
-```
+## Tools
 
-The release workflow checks that the tag matches `Cargo.toml`, runs the tests on
-Linux and publishes a GitHub Release with the Linux binary, `SHA256SUMS` and
-generated notes, without waiting for the Windows runner. The Windows binary is
-then built and added to that release, so it appears later. Until then,
-downloading it fails, including through `scripts/install.sh`.
+| Tool               | Purpose                                                                          |
+| ------------------ | -------------------------------------------------------------------------------- |
+| `get_file_outline` | Symbols in a file with signatures and line ranges                                |
+| `search_symbols`   | Ranked name search across the workspace (exact > prefix > substring)             |
+| `read_symbol`      | Exact source of one definition, line-numbered                                    |
+| `replace_symbol`   | Rewrite or delete one definition without reading the file; rejects syntax errors |
+| `insert_symbol`    | Add code after/before a symbol or at the end of a file; rejects syntax errors    |
+| `read_file_pruned` | File text within `max_tokens`: full → bodies elided → outline → truncated        |
+| `find_references`  | Uses of a symbol from identifier tokens (comments and strings skipped)           |
+| `search_text`      | Literal or regex search over files, honouring `.gitignore`                       |
+| `list_files`       | Files under a directory, honouring `.gitignore`                                  |
+| `changed_symbols`  | Symbols added/modified/removed by uncommitted changes or since a revision        |
+| `git_status`       | Working-tree status                                                              |
 
-## Development
+## Build from source
+
+This needs Rust 1.90 or later. Use it on platforms without a prebuilt binary,
+such as macOS and Linux ARM.
 
 ```sh
-cargo test
-cargo fmt
-cargo clippy --all-targets -- -D warnings
-scripts/test-guard.sh   # table test for the hook; needs jq
+git clone https://github.com/aeron2k4/astlens.git
+cd astlens
+cargo build --release
+./target/release/astlens --serve /path/to/project
 ```
 
-`cargo bench --bench report` measures this crate's own `src/`. To regenerate
-[`BENCHMARKS.md`](BENCHMARKS.md), set `BENCH_CORPORA` to comma-separated
-`name=directory` pairs; the bench stops if a directory does not exist. Paths
-vary by system, for example:
+To install the build as `~/.cargo/bin/astlens` instead, run
+`scripts/install.sh --from-source`, then `astlens --install`.
 
-```sh
-BENCH_CORPORA="Go stdlib=$(go env GOROOT)/src,\
-CPython stdlib=$(python3 -c 'import sysconfig; print(sysconfig.get_path("stdlib"))'),\
-tokio (Rust)=/path/to/tokio" \
-BENCH_OUT=BENCHMARKS.md cargo bench --bench report
-```
+To contribute, see [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## License
 
