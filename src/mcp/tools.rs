@@ -1,6 +1,6 @@
 //! MCP tool definitions.
 //!
-//! [`Workspace`] holds the synchronous, directly testable logic; [`CodeScope`]
+//! [`Workspace`] holds the synchronous, directly testable logic; [`AstLens`]
 //! exposes it as `#[tool]` functions and runs each call on a blocking thread
 //! so file I/O and parsing never stall the async runtime.
 
@@ -62,7 +62,7 @@ impl Workspace {
         if truncated {
             format!(
                 "… searched only the first {} files; narrow with `dir` or raise \
-                 CODE_SCOPE_MAX_FILES\n",
+                 ASTLENS_MAX_FILES\n",
                 self.max_files
             )
         } else {
@@ -620,7 +620,7 @@ fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
     let dir = path.parent().unwrap_or(Path::new("."));
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     let tmp = dir.join(format!(
-        ".{name}.code-scope-{}-{}.tmp",
+        ".{name}.astlens-{}-{}.tmp",
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
@@ -765,12 +765,12 @@ pub struct SearchTextParams {
 }
 
 #[derive(Clone)]
-pub struct CodeScope {
+pub struct AstLens {
     workspace: Arc<Workspace>,
     tool_router: ToolRouter<Self>,
 }
 
-impl CodeScope {
+impl AstLens {
     /// Run `f` on the blocking pool, persist any new parse results, and
     /// flatten errors into tool error text.
     async fn run<F>(&self, f: F) -> Result<String, String>
@@ -793,9 +793,9 @@ impl CodeScope {
 }
 
 #[tool_router]
-impl CodeScope {
+impl AstLens {
     pub fn new(workspace: Workspace) -> Self {
-        CodeScope {
+        AstLens {
             workspace: Arc::new(workspace),
             tool_router: Self::tool_router(),
         }
@@ -944,7 +944,7 @@ impl CodeScope {
 }
 
 #[tool_handler(router = self.tool_router)]
-impl ServerHandler for CodeScope {
+impl ServerHandler for AstLens {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new(
@@ -1197,7 +1197,7 @@ mod tests {
         )
         .unwrap();
         let note =
-            "… searched only the first 1 files; narrow with `dir` or raise CODE_SCOPE_MAX_FILES\n";
+            "… searched only the first 1 files; narrow with `dir` or raise ASTLENS_MAX_FILES\n";
         assert!(!ws.search("load", None, 10).contains("searched only"));
 
         let ws = ws.with_max_files(1);

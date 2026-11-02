@@ -1,4 +1,4 @@
-//! Command line of the `code-scope-mcp` binary (alias `csm`).
+//! Command line of the `astlens` binary.
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -6,14 +6,14 @@ use std::path::PathBuf;
 pub const HELP: &str = "\
 AST-aware code navigation MCP server
 
-Usage: code-scope-mcp <OPTION>   (shell alias: csm)
+Usage: astlens <OPTION>
 
 Options:
   -i, --install [--no-enforce]  Set up Claude Code: MCP server, hook and CLAUDE.md block.
                                 --no-enforce registers the MCP server only
-  -u, --uninstall               Undo --install, remove the shell alias and this binary
+  -u, --uninstall               Undo --install, remove the PATH entry and this binary
   -s, --serve [ROOT]            Run the MCP server over stdio; Claude Code starts this itself.
-                                ROOT defaults to $CODE_SCOPE_ROOT, then the current directory
+                                ROOT defaults to $ASTLENS_ROOT, then the current directory
   -h, --help                    Show this help
   -v, --version                 Show the version
 ";

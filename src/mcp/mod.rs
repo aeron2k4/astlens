@@ -2,4 +2,4 @@
 
 pub mod tools;
 
-pub use tools::{CodeScope, Workspace};
+pub use tools::{AstLens, Workspace};

@@ -1,26 +1,26 @@
-//! code-scope-mcp: AST-aware code navigation MCP server over stdio.
+//! astlens: AST-aware code navigation MCP server over stdio.
 //!
 //! While serving, `stdout` is reserved for JSON-RPC traffic. All diagnostics go
 //! to `stderr`.
 //!
 //! Commands are in [`cli`]. `--serve [ROOT]` runs the server; the workspace root
-//! defaults to `$CODE_SCOPE_ROOT`, then the current directory.
+//! defaults to `$ASTLENS_ROOT`, then the current directory.
 //!
-//! Parse results persist in `$CODE_SCOPE_CACHE_DIR`, defaulting to
-//! `$XDG_CACHE_HOME/code-scope-mcp` or `~/.cache/code-scope-mcp`. Set
-//! `CODE_SCOPE_NO_CACHE=1` to keep the cache in memory only, and
-//! `CODE_SCOPE_MAX_FILES` to change how many files a search walks (20000), and
-//! `CODE_SCOPE_CACHE_MB` to change the memory kept for parsed files (512).
+//! Parse results persist in `$ASTLENS_CACHE_DIR`, defaulting to
+//! `$XDG_CACHE_HOME/astlens` or `~/.cache/astlens`. Set
+//! `ASTLENS_NO_CACHE=1` to keep the cache in memory only, and
+//! `ASTLENS_MAX_FILES` to change how many files a search walks (20000), and
+//! `ASTLENS_CACHE_MB` to change the memory kept for parsed files (512).
 
 use std::ffi::OsString;
 use std::io::IsTerminal;
 use std::path::PathBuf;
 
 use anyhow::Result;
-use code_scope_mcp::cli::{self, Command};
-use code_scope_mcp::index::cache::PersistentStore;
-use code_scope_mcp::install;
-use code_scope_mcp::mcp::{CodeScope, Workspace};
+use astlens::cli::{self, Command};
+use astlens::index::cache::PersistentStore;
+use astlens::install;
+use astlens::mcp::{AstLens, Workspace};
 use rmcp::ServiceExt;
 use tracing_subscriber::EnvFilter;
 
@@ -29,7 +29,7 @@ fn init_tracing() {
         .with_writer(std::io::stderr)
         .with_ansi(false)
         .with_env_filter(
-            EnvFilter::try_from_env("CODE_SCOPE_LOG").unwrap_or_else(|_| EnvFilter::new("info")),
+            EnvFilter::try_from_env("ASTLENS_LOG").unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .init();
 }
@@ -38,23 +38,23 @@ fn workspace_root(arg: Option<PathBuf>) -> Result<PathBuf> {
     if let Some(arg) = arg {
         return Ok(arg);
     }
-    if let Some(env) = std::env::var_os("CODE_SCOPE_ROOT") {
+    if let Some(env) = std::env::var_os("ASTLENS_ROOT") {
         return Ok(env.into());
     }
     Ok(std::env::current_dir()?)
 }
 
 fn cache_dir() -> Option<PathBuf> {
-    if std::env::var_os("CODE_SCOPE_NO_CACHE").is_some_and(|v| !v.is_empty() && v != "0") {
+    if std::env::var_os("ASTLENS_NO_CACHE").is_some_and(|v| !v.is_empty() && v != "0") {
         return None;
     }
-    if let Some(dir) = std::env::var_os("CODE_SCOPE_CACHE_DIR") {
+    if let Some(dir) = std::env::var_os("ASTLENS_CACHE_DIR") {
         return Some(dir.into());
     }
     let base = std::env::var_os("XDG_CACHE_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))?;
-    Some(base.join("code-scope-mcp"))
+    Some(base.join("astlens"))
 }
 
 /// Attach the persistent store when available; a broken or unwritable cache
@@ -111,13 +111,13 @@ fn main() -> Result<()> {
 async fn serve(root: Option<PathBuf>) -> Result<()> {
     init_tracing();
     let mut workspace = with_persistence(Workspace::new(workspace_root(root)?)?);
-    if let Some(max) = std::env::var("CODE_SCOPE_MAX_FILES")
+    if let Some(max) = std::env::var("ASTLENS_MAX_FILES")
         .ok()
         .and_then(|v| v.trim().parse::<usize>().ok())
     {
         workspace = workspace.with_max_files(max);
     }
-    if let Some(mb) = std::env::var("CODE_SCOPE_CACHE_MB")
+    if let Some(mb) = std::env::var("ASTLENS_CACHE_MB")
         .ok()
         .and_then(|v| v.trim().parse::<usize>().ok())
     {
@@ -126,10 +126,10 @@ async fn serve(root: Option<PathBuf>) -> Result<()> {
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
         root = %workspace.root().display(),
-        "code-scope-mcp starting"
+        "astlens starting"
     );
 
-    let service = CodeScope::new(workspace)
+    let service = AstLens::new(workspace)
         .serve(rmcp::transport::stdio())
         .await
         .inspect_err(|err| tracing::error!(%err, "failed to start MCP server"))?;

@@ -1,4 +1,4 @@
-# code-scope-mcp
+# astlens
 
 A small, fast MCP server in Rust for AST-aware code navigation. It uses
 tree-sitter to find symbols and trims file contents to fit a token budget, so
@@ -39,19 +39,19 @@ indexed at startup. A parse records a file's symbols and the offsets of its
 identifier tokens, and is cached at two levels:
 
 - **in memory**, reused while a file's modification time and size are unchanged,
-  within a memory budget (`CODE_SCOPE_CACHE_MB`);
+  within a memory budget (`ASTLENS_CACHE_MB`);
 - **on disk**, in an LMDB (memory-mapped) store keyed by the file's git blob
   hash, so unchanged files are not re-parsed after a restart. Entries of files
   deleted from the workspace are dropped in the background at startup.
 
 | Variable               | Effect                                                                  |
 | ---------------------- | ----------------------------------------------------------------------- |
-| `CODE_SCOPE_ROOT`      | Workspace root when no argument is given                                |
-| `CODE_SCOPE_CACHE_DIR` | Store location (default `$XDG_CACHE_HOME/code-scope-mcp` or `~/.cache/code-scope-mcp`) |
-| `CODE_SCOPE_NO_CACHE`  | Set to `1` to keep the cache in memory only                             |
-| `CODE_SCOPE_CACHE_MB`  | Memory kept for parsed files, least recently used evicted first (default 512) |
-| `CODE_SCOPE_MAX_FILES` | Files walked per workspace-wide search (default 20000); output notes when the limit is hit |
-| `CODE_SCOPE_LOG`       | Log filter, e.g. `debug` (stderr only)                                  |
+| `ASTLENS_ROOT`         | Workspace root when no argument is given                                |
+| `ASTLENS_CACHE_DIR`    | Store location (default `$XDG_CACHE_HOME/astlens` or `~/.cache/astlens`) |
+| `ASTLENS_NO_CACHE`     | Set to `1` to keep the cache in memory only                             |
+| `ASTLENS_CACHE_MB`     | Memory kept for parsed files, least recently used evicted first (default 512) |
+| `ASTLENS_MAX_FILES`    | Files walked per workspace-wide search (default 20000); output notes when the limit is hit |
+| `ASTLENS_LOG`          | Log filter, e.g. `debug` (stderr only)                                  |
 
 ## Performance
 
@@ -74,23 +74,23 @@ Full results for Go, CPython and tokio are in [`BENCHMARKS.md`](BENCHMARKS.md).
 ## Usage
 
 Prebuilt binaries for Linux (x86_64) and Windows (x86_64) are attached to each
-[release](https://github.com/aeron2k4/code-scope-mcp/releases), with their
+[release](https://github.com/aeron2k4/astlens/releases), with their
 SHA-256 checksums in `SHA256SUMS`. For example, on Linux:
 
 ```sh
-curl -fLo ~/.local/bin/code-scope-mcp \
-  https://github.com/aeron2k4/code-scope-mcp/releases/latest/download/code-scope-mcp-linux
-chmod +x ~/.local/bin/code-scope-mcp
+curl -fLo ~/.local/bin/astlens \
+  https://github.com/aeron2k4/astlens/releases/latest/download/astlens-linux
+chmod +x ~/.local/bin/astlens
 ```
 
-The Windows binary is `code-scope-mcp-windows.exe`. Other platforms (macOS, Linux
+The Windows binary is `astlens-windows.exe`. Other platforms (macOS, Linux
 ARM) can build from source.
 
 Or build from source:
 
 ```sh
 cargo build --release
-./target/release/code-scope-mcp --serve /path/to/project   # or $CODE_SCOPE_ROOT, or the cwd
+./target/release/astlens --serve /path/to/project   # or $ASTLENS_ROOT, or the cwd
 ```
 
 ### Claude Code
@@ -99,14 +99,14 @@ Installing takes two steps. First the binary, on Linux and Windows (run it in
 Git Bash, which Claude Code also uses for hooks). This needs `curl`, not `sudo`:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/aeron2k4/code-scope-mcp/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/aeron2k4/astlens/main/scripts/install.sh | bash
 ```
 
 or, from a clone, `scripts/install.sh`. It checks the latest release binary
-against `SHA256SUMS` and saves it as `~/.local/bin/code-scope-mcp`
-(`CODE_SCOPE_BIN_DIR` to change). A marked block in the rc file of your shell
-(bash, zsh or fish) adds the alias `csm`, and that directory to `PATH` if
-missing; both apply to new shells. Options (after `| bash -s --` when piped):
+against `SHA256SUMS` and saves it as `~/.local/bin/astlens`
+(`ASTLENS_BIN_DIR` to change). A marked block in the rc file of your shell
+(bash, zsh or fish) adds that directory to `PATH` if missing, for new shells.
+Options (after `| bash -s --` when piped):
 
 ```sh
 scripts/install.sh --version v0.1.0   # a specific release
@@ -120,19 +120,19 @@ Then set up Claude Code. This needs `claude`, and `jq` for the hook (on Windows,
 `winget install jqlang.jq`):
 
 ```sh
-csm --install              # or code-scope-mcp --install, in a shell opened before the alias
+astlens --install
 ```
 
-`csm` alone shows the help. `csm --install` (or `csm -i`) does three things, all at user scope
+`astlens` alone shows the help. `astlens --install` (or `astlens -i`) does three things, all at user scope
 so they apply to every project:
 
-1. Register the binary as `code-scope`, run as `code-scope-mcp --serve`, with
+1. Register the binary as `astlens`, run as `astlens --serve`, with
    `"alwaysLoad": true`, so its tools are in the model's tool list from the start instead of deferred behind ToolSearch.
    With no root argument the server uses the session's working directory.
-2. Add a `PreToolUse` hook (`~/.claude/hooks/code-scope-guard.sh`, wired in
-   `~/.claude/settings.json`) that points Claude to the code-scope tools:
+2. Add a `PreToolUse` hook (`~/.claude/hooks/astlens-guard.sh`, wired in
+   `~/.claude/settings.json`) that points Claude to the astlens tools:
    - denies whole-file `Read` of source files in the session's workspace; a
-     `Read` with a `limit` of at most 300 lines (`CODE_SCOPE_MAX_READ_LINES`)
+     `Read` with a `limit` of at most 300 lines (`ASTLENS_MAX_READ_LINES`)
      is still allowed, because `Edit` needs a prior `Read`;
    - denies searches that may cover those files inside the session's
      workspace, both the `Grep` tool and `grep`/`egrep`/`fgrep`/`ugrep`/`rg`/`git
@@ -148,18 +148,18 @@ so they apply to every project:
      (`cat x.rs | wc -l`), and `sed -i` are allowed. Other programs that can
      print a file (`python`, `xxd`, `cut`) are not inspected.
 
-   The hook is [`scripts/code-scope-guard.sh`](scripts/code-scope-guard.sh).
+   The hook is [`scripts/astlens-guard.sh`](scripts/astlens-guard.sh).
 3. Add a short instruction block to `~/.claude/CLAUDE.md`.
 
 Restart Claude Code afterwards. Both commands are safe to re-run. To upgrade, run
-the script for the new binary, then `csm --install` for the hook that came with it.
+the script for the new binary, then `astlens --install` for the hook that came with it.
 
 ```sh
-csm --install --no-enforce   # step 1 only, no hook or CLAUDE.md block
-csm --uninstall              # undo steps 1–3, remove the shell block and the binary
+astlens --install --no-enforce   # step 1 only, no hook or CLAUDE.md block
+astlens --uninstall              # undo steps 1–3, remove the shell block and the binary
 ```
 
-`csm --uninstall` keeps the parse cache (`~/.cache/code-scope-mcp`). A binary from
+`astlens --uninstall` keeps the parse cache (`~/.cache/astlens`). A binary from
 `cargo install` or a package manager is left for that tool to remove, and on
 Windows a running binary cannot be deleted: it says so, and you delete it after
 closing Claude Code.
@@ -167,8 +167,8 @@ closing Claude Code.
 To register manually instead:
 
 ```sh
-claude mcp add-json code-scope \
-  '{"type": "stdio", "command": "/abs/path/to/code-scope-mcp", "args": ["--serve", "/path/to/project"], "alwaysLoad": true}'
+claude mcp add-json astlens \
+  '{"type": "stdio", "command": "/abs/path/to/astlens", "args": ["--serve", "/path/to/project"], "alwaysLoad": true}'
 ```
 
 ## Releasing
@@ -176,7 +176,7 @@ claude mcp add-json code-scope \
 Bump `version` in `Cargo.toml`, commit, then push a matching tag:
 
 ```sh
-git tag -a v0.2.0 -m "code-scope-mcp 0.2.0"
+git tag -a v0.2.0 -m "astlens 0.2.0"
 git push origin v0.2.0
 ```
 

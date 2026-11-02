@@ -14,13 +14,13 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use code_scope_mcp::ast::parser::Lang;
-use code_scope_mcp::ast::pruner::{self, PruneOptions, estimate_tokens};
-use code_scope_mcp::git;
-use code_scope_mcp::index::cache::{ParseCache, PersistentStore};
-use code_scope_mcp::index::refs::{self, RefOptions};
-use code_scope_mcp::index::text::{self, TextOptions};
-use code_scope_mcp::index::{self, SearchOptions};
+use astlens::ast::parser::Lang;
+use astlens::ast::pruner::{self, PruneOptions, estimate_tokens};
+use astlens::git;
+use astlens::index::cache::{ParseCache, PersistentStore};
+use astlens::index::refs::{self, RefOptions};
+use astlens::index::text::{self, TextOptions};
+use astlens::index::{self, SearchOptions};
 use regex::Regex;
 
 const MAX_FILES: usize = 50_000;
@@ -219,11 +219,11 @@ fn startup_ms(root: &Path) -> f64 {
     let mut samples = Vec::new();
     for _ in 0..STARTUP_ROUNDS {
         let start = Instant::now();
-        let mut child = Command::new(env!("CARGO_BIN_EXE_code-scope-mcp"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_astlens"))
             .arg("--serve")
             .arg(root)
-            .env("CODE_SCOPE_NO_CACHE", "1")
-            .env("CODE_SCOPE_LOG", "off")
+            .env("ASTLENS_NO_CACHE", "1")
+            .env("ASTLENS_LOG", "off")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -262,7 +262,7 @@ fn corpora() -> Vec<(String, PathBuf)> {
             })
             .collect(),
         _ => vec![(
-            "code-scope-mcp".into(),
+            "astlens".into(),
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src"),
         )],
     }

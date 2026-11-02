@@ -1,7 +1,7 @@
 name: Release
 
 # Push a tag matching the version in Cargo.toml, e.g. `git tag -a v0.2.0 -m
-# "code-scope-mcp 0.2.0" && git push origin v0.2.0`. To release a tag that
+# "astlens 0.2.0" && git push origin v0.2.0`. To release a tag that
 # already exists, run this workflow by hand with that tag.
 on:
   push:
@@ -51,12 +51,12 @@ jobs:
       - run: cargo build --release --locked
 
       # Ship the bare executable, named by OS and without the version, so
-      # releases/latest/download/code-scope-mcp-<os> is a stable URL.
-      - run: cp target/release/code-scope-mcp code-scope-mcp-linux
+      # releases/latest/download/astlens-<os> is a stable URL.
+      - run: cp target/release/astlens astlens-linux
       - uses: actions/upload-artifact@v7
         with:
           name: linux
-          path: code-scope-mcp-linux
+          path: astlens-linux
           if-no-files-found: error
 
   release:
@@ -71,14 +71,14 @@ jobs:
           path: dist
       # One checksum file for all binaries: `sha256sum -c SHA256SUMS`.
       - name: Checksums
-        run: cd dist && sha256sum code-scope-mcp-* > SHA256SUMS
+        run: cd dist && sha256sum astlens-* > SHA256SUMS
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$TAG" dist/* \
             --repo "$GITHUB_REPOSITORY" \
-            --title "code-scope-mcp $TAG" \
+            --title "astlens $TAG" \
             --generate-notes \
             --verify-tag
 
@@ -104,8 +104,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          asset=code-scope-mcp-windows.exe
-          cp target/release/code-scope-mcp.exe "$asset"
+          asset=astlens-windows.exe
+          cp target/release/astlens.exe "$asset"
           gh release upload "$TAG" "$asset" --clobber
 
           gh release download "$TAG" --pattern SHA256SUMS --clobber

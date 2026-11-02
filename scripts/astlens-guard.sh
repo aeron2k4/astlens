@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# PreToolUse guard installed by code-scope-mcp (`code-scope-mcp --install`), so
-# Claude uses the code-scope MCP tools for source code:
+# PreToolUse guard installed by astlens (`astlens --install`), so
+# Claude uses the astlens MCP tools for source code:
 # - Read: deny whole-file reads of source files inside the working directory.
 #   Files elsewhere, such as dependency sources, can be read. A Read with a limit of at
-#   most $CODE_SCOPE_MAX_READ_LINES lines (default 300) is still allowed,
+#   most $ASTLENS_MAX_READ_LINES lines (default 300) is still allowed,
 #   since Edit needs a prior Read.
 # - Grep, and grep/egrep/fgrep/ugrep/rg/git grep in Bash: deny searches that may
 #   cover source files inside the session's working directory. Searches over
@@ -11,7 +11,7 @@
 #   extension), over piped input, or outside the working directory are allowed.
 # - cat/tac/nl/more/less/most/bat/head/tail/sed/awk and rtk read/smart in Bash:
 #   deny reading source files inside the working directory, the same as Read.
-#   Output limited to at most $CODE_SCOPE_MAX_READ_LINES lines (head -n 50,
+#   Output limited to at most $ASTLENS_MAX_READ_LINES lines (head -n 50,
 #   sed -n 1,50p, rtk read --head-lines 50), sent to a file, counted or hashed
 #   (cat x.rs | wc -l), and in-place edits (sed -i) are allowed.
 # Bash parsing is best effort: commands it cannot see into (eval, scripts,
@@ -41,12 +41,12 @@ SEARCH_CMD="(^|$BOUND)(grep|egrep|fgrep|ugrep|rg)($BOUND|\$)"
 READ_CMD="(^|$BOUND)(cat|tac|nl|more|less|most|bat|batcat|head|tail|sed|awk|gawk|mawk|nawk|read|smart)($BOUND|\$)"
 CODE_HINT="[*?[{]|\\.($EXTS)($BOUND|\$)"
 
-MAX_LINES=${CODE_SCOPE_MAX_READ_LINES:-300}
+MAX_LINES=${ASTLENS_MAX_READ_LINES:-300}
 [[ "$MAX_LINES" =~ ^[0-9]+$ ]] || MAX_LINES=300
 
-READ_HINT='Use code-scope MCP tools instead (load with ToolSearch "select:mcp__code-scope__get_file_outline,mcp__code-scope__read_symbol,mcp__code-scope__search_symbols,mcp__code-scope__read_file_pruned"): get_file_outline / read_symbol / read_file_pruned. To rewrite a whole function or class use replace_symbol, to add one use insert_symbol.'
+READ_HINT='Use astlens MCP tools instead (load with ToolSearch "select:mcp__astlens__get_file_outline,mcp__astlens__read_symbol,mcp__astlens__search_symbols,mcp__astlens__read_file_pruned"): get_file_outline / read_symbol / read_file_pruned. To rewrite a whole function or class use replace_symbol, to add one use insert_symbol.'
 
-GREP_HINT='Use code-scope MCP tools instead (load with ToolSearch "select:mcp__code-scope__search_text,mcp__code-scope__find_references"): search_text for a literal or regex (.gitignore-aware, shows the enclosing symbol; takes dir), find_references for uses of a symbol. Searching non-code files stays allowed: pass a non-code path, or a filter such as --include="*.md" / -g "*.md" / type md.'
+GREP_HINT='Use astlens MCP tools instead (load with ToolSearch "select:mcp__astlens__search_text,mcp__astlens__find_references"): search_text for a literal or regex (.gitignore-aware, shows the enclosing symbol; takes dir), find_references for uses of a symbol. Searching non-code files stays allowed: pass a non-code path, or a filter such as --include="*.md" / -g "*.md" / type md.'
 
 deny() {
   jq -n --arg r "$1" '{hookSpecificOutput: {hookEventName: "PreToolUse",

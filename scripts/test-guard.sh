@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Table test for code-scope-guard.sh; run from anywhere. Needs jq.
+# Table test for astlens-guard.sh; run from anywhere. Needs jq.
 set -u
-GUARD=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/code-scope-guard.sh
+GUARD=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/astlens-guard.sh
 WS=$(mktemp -d)
 trap 'rm -rf "$WS"' EXIT
 mkdir -p "$WS/src"

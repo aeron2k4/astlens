@@ -13,28 +13,28 @@ use std::process::{Command, Output, Stdio};
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
 
-const SERVER: &str = "code-scope";
-const GUARD: &str = include_str!("../scripts/code-scope-guard.sh");
-const GUARD_NAME: &str = "code-scope-guard.sh";
+const SERVER: &str = "astlens";
+const GUARD: &str = include_str!("../scripts/astlens-guard.sh");
+const GUARD_NAME: &str = "astlens-guard.sh";
 
-const MEMORY_BEGIN: &str = "<!-- code-scope:begin -->";
-const MEMORY_END: &str = "<!-- code-scope:end -->";
+const MEMORY_BEGIN: &str = "<!-- astlens:begin -->";
+const MEMORY_END: &str = "<!-- astlens:end -->";
 const MEMORY_TEXT: &str = "\
 # Code navigation
-When exploring or reading source code, prefer the code-scope MCP tools over Read/Grep:
+When exploring or reading source code, prefer the astlens MCP tools over Read/Grep:
 - `get_file_outline` before opening a file; `search_symbols` to find a definition.
 - `read_symbol` to read one function/class instead of the whole file.
 - `replace_symbol` to rewrite or delete a whole function/class, `insert_symbol` to add one; no Read needed.
 - `read_file_pruned` when a whole file is needed but may be large.
 - `find_references` to see where a symbol is used; `search_text` instead of Grep.
 - `changed_symbols` to see which symbols a diff touches before reading it.
-Use Read/Grep for non-code files or when code-scope fails.
-Load the tools with ToolSearch (\"select:mcp__code-scope__...\") if they are deferred.
+Use Read/Grep for non-code files or when astlens fails.
+Load the tools with ToolSearch (\"select:mcp__astlens__...\") if they are deferred.
 ";
 
 // Must match the markers in scripts/install.sh.
-const RC_BEGIN: &str = "# code-scope-mcp:begin";
-const RC_END: &str = "# code-scope-mcp:end";
+const RC_BEGIN: &str = "# astlens:begin";
+const RC_END: &str = "# astlens:end";
 
 fn log(message: impl std::fmt::Display) {
     eprintln!("==> {message}");
@@ -178,7 +178,7 @@ pub fn uninstall() -> Result<()> {
             "Could not run 'claude' ({err}); remove it later with: claude mcp remove --scope user {SERVER}"
         ));
     }
-    log("Removing hook, CLAUDE.md block and shell alias");
+    log("Removing hook, CLAUDE.md block and PATH entry");
     remove_files(&paths)?;
     remove_binary(&current_exe()?, &paths.cargo_bin);
     log("Done. Restart Claude Code and open a new shell.");
@@ -391,7 +391,7 @@ fn owner(exe: &Path, cargo_bin: &Path) -> Owner {
 fn remove_binary(exe: &Path, cargo_bin: &Path) {
     let shown = exe.display();
     match owner(exe, cargo_bin) {
-        Owner::Cargo => log("Installed by cargo; remove it with: cargo uninstall code-scope-mcp"),
+        Owner::Cargo => log("Installed by cargo; remove it with: cargo uninstall astlens"),
         Owner::PackageManager => log(format_args!(
             "Not removing {shown}; use the package manager that installed it"
         )),
@@ -435,13 +435,13 @@ mod tests {
             "model": "x",
             "hooks": {"PreToolUse": [
                 {"matcher": "Bash", "hooks": [{"type": "command", "command": "rtk hook claude"}]},
-                {"matcher": "Read|Grep", "hooks": [{"type": "command", "command": "/old/code-scope-guard.sh"}]},
+                {"matcher": "Read|Grep", "hooks": [{"type": "command", "command": "/old/astlens-guard.sh"}]},
             ]},
         });
-        add_hook(&mut settings, "\"/new/code-scope-guard.sh\"").unwrap();
+        add_hook(&mut settings, "\"/new/astlens-guard.sh\"").unwrap();
         assert_eq!(
             commands(&settings),
-            ["rtk hook claude", "\"/new/code-scope-guard.sh\""]
+            ["rtk hook claude", "\"/new/astlens-guard.sh\""]
         );
         assert_eq!(settings["model"], "x");
     }
@@ -449,7 +449,7 @@ mod tests {
     #[test]
     fn stripping_the_only_hook_leaves_no_empty_containers() {
         let mut settings = json!({"model": "x"});
-        add_hook(&mut settings, "/h/code-scope-guard.sh").unwrap();
+        add_hook(&mut settings, "/h/astlens-guard.sh").unwrap();
         strip_hook(&mut settings);
         assert_eq!(settings, json!({"model": "x"}));
     }
@@ -459,7 +459,7 @@ mod tests {
         let mut settings = json!({"hooks": {
             "PreToolUse": [{"matcher": "Bash", "hooks": [
                 {"type": "command", "command": "other"},
-                {"type": "command", "command": "/h/code-scope-guard.sh"},
+                {"type": "command", "command": "/h/astlens-guard.sh"},
             ]}],
             "Stop": [],
         }});
@@ -493,7 +493,7 @@ mod tests {
         fs::write(&paths.memory, "mine").unwrap();
         fs::write(
             &paths.rc_files[0],
-            format!("before\n{RC_BEGIN}\nalias csm=code-scope-mcp\n{RC_END}\nafter\n"),
+            format!("before\n{RC_BEGIN}\nexport PATH=x\n{RC_END}\nafter\n"),
         )
         .unwrap();
 

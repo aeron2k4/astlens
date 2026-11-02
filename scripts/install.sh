@@ -1,30 +1,30 @@
 #!/usr/bin/env bash
-# Install the code-scope-mcp binary and the shell alias csm. Runs on Linux and
+# Install the astlens binary. Runs on Linux and
 # Windows (in Git Bash), which needs curl, and on macOS, which needs cargo: there
-# are no macOS binaries. Afterwards, `csm --install` sets up Claude Code.
+# are no macOS binaries. Afterwards, `astlens --install` sets up Claude Code.
 #
 #   scripts/install.sh                   download the latest release
 #   scripts/install.sh --version v0.1.0  download that release instead
 #   scripts/install.sh --from-source     build with cargo instead of downloading
 #
-# Without a clone: curl -fsSL https://raw.githubusercontent.com/aeron2k4/code-scope-mcp/main/scripts/install.sh | bash -s -- [options]
+# Without a clone: curl -fsSL https://raw.githubusercontent.com/aeron2k4/astlens/main/scripts/install.sh | bash -s -- [options]
 #
-# The binary goes to ~/.local/bin (CODE_SCOPE_BIN_DIR to change), no sudo needed.
-# A marked block in the rc file of $SHELL adds the alias, and that directory to
-# PATH if missing. `csm --uninstall` removes both.
+# The binary goes to ~/.local/bin (ASTLENS_BIN_DIR to change), no sudo needed.
+# A marked block in the rc file of $SHELL adds that directory to PATH if missing.
+# `astlens --uninstall` removes it.
 set -euo pipefail
 
-REPO=aeron2k4/code-scope-mcp
+REPO=aeron2k4/astlens
 # Set when the script runs from a clone; empty when piped from curl.
 REPO_DIR=
 if [ -f "${BASH_SOURCE[0]:-}" ]; then
   dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
   [ -f "$dir/Cargo.toml" ] && REPO_DIR=$dir
 fi
-BIN_DIR=${CODE_SCOPE_BIN_DIR:-$HOME/.local/bin}
+BIN_DIR=${ASTLENS_BIN_DIR:-$HOME/.local/bin}
 # Must match the markers in src/install.rs.
-BEGIN='# code-scope-mcp:begin'
-END='# code-scope-mcp:end'
+BEGIN='# astlens:begin'
+END='# astlens:end'
 
 log() { printf '==> %s\n' "$*" >&2; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -49,9 +49,9 @@ os=$(uname -s)
 arch=$(uname -m)
 exe=
 case "$os" in
-  Linux) [ "$arch" = x86_64 ] && asset=code-scope-mcp-linux ;;
+  Linux) [ "$arch" = x86_64 ] && asset=astlens-linux ;;
   Darwin) ;;
-  MINGW*|MSYS*|CYGWIN*) exe=.exe; [ "$arch" = x86_64 ] && asset=code-scope-mcp-windows.exe ;;
+  MINGW*|MSYS*|CYGWIN*) exe=.exe; [ "$arch" = x86_64 ] && asset=astlens-windows.exe ;;
   *) die "unsupported OS: $os" ;;
 esac
 asset=${asset:-}
@@ -69,19 +69,17 @@ shell_rc() {
 
 # Write our block to the shell's rc file, replacing an earlier one.
 add_to_shell() {
-  local bin_dir=$1 rc path_line alias_line block='' tmp
+  local bin_dir=$1 rc path_line block='' tmp
   rc=$(shell_rc)
   if [ -z "$rc" ]; then
-    log "Unknown shell '${SHELL:-}'; add $bin_dir to PATH and alias csm=code-scope-mcp yourself"
+    log "Unknown shell '${SHELL:-}'; add $bin_dir to PATH yourself"
     return 0
   fi
   case "$rc" in
     *.fish)
-      path_line="set -gx PATH \"$bin_dir\" \$PATH"
-      alias_line='alias csm code-scope-mcp' ;;
+      path_line="set -gx PATH \"$bin_dir\" \$PATH" ;;
     *)
-      path_line="export PATH=\"$bin_dir:\$PATH\""
-      alias_line='alias csm=code-scope-mcp' ;;
+      path_line="export PATH=\"$bin_dir:\$PATH\"" ;;
   esac
   mkdir -p "$(dirname "$rc")"
   touch "$rc"
@@ -91,11 +89,6 @@ add_to_shell() {
     *":$bin_dir:"*) grep -qxF "$path_line" "$rc" && block=$path_line$'\n' ;;
     *) block=$path_line$'\n' ;;
   esac
-  if have csm && [ "$(command -v csm)" != "$bin_dir/csm" ]; then
-    log "Not adding alias csm: $(command -v csm) already has that name. Use code-scope-mcp instead."
-  else
-    block=$block$alias_line$'\n'
-  fi
 
   tmp=$(mktemp)
   if grep -qxF "$BEGIN" "$rc" && grep -qxF "$END" "$rc"; then
@@ -111,7 +104,7 @@ add_to_shell() {
   # Rewrite in place, so that an rc file symlinked from a dotfiles repo stays a symlink.
   cat "$tmp" >"$rc"
   rm -f "$tmp"
-  log "Updated $rc"
+  if [ -n "$block" ]; then log "Updated $rc"; fi
 }
 
 tmpdir=$(mktemp -d)
@@ -126,7 +119,7 @@ fi
 if [ "$source_build" = 1 ]; then
   need cargo "https://rustup.rs"
   BIN_DIR=${CARGO_HOME:-$HOME/.cargo}/bin
-  BIN=$BIN_DIR/code-scope-mcp$exe
+  BIN=$BIN_DIR/astlens$exe
   if [ -n "$REPO_DIR" ]; then
     log "Building $REPO_DIR and installing $BIN"
     cargo install --path "$REPO_DIR" --locked --force
@@ -150,7 +143,7 @@ else
   want=$(awk -v f="$asset" '$2==f || $2=="*"f {print $1}' "$tmpdir/SHA256SUMS")
   [ -n "$want" ] || die "$asset is not listed in SHA256SUMS"
   [ "$(sha256sum "$tmpdir/$asset" | cut -d' ' -f1)" = "$want" ] || die "checksum mismatch for $asset"
-  BIN=$BIN_DIR/code-scope-mcp$exe
+  BIN=$BIN_DIR/astlens$exe
   mkdir -p "$BIN_DIR"
   install -m 755 "$tmpdir/$asset" "$BIN"
   log "Installed $BIN"
@@ -160,4 +153,3 @@ add_to_shell "$BIN_DIR"
 
 log "Done. To set up Claude Code, or update its hook after an upgrade, run now:"
 log "  $BIN --install"
-log "In a new shell, the same is: csm --install"

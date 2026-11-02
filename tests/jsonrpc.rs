@@ -3,7 +3,7 @@
 
 use std::fs;
 
-use code_scope_mcp::mcp::{CodeScope, Workspace};
+use astlens::mcp::{AstLens, Workspace};
 use rmcp::ServiceExt;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -55,7 +55,7 @@ async fn mcp_session_over_jsonrpc() {
     .unwrap();
 
     let (server_io, client_io) = tokio::io::duplex(64 * 1024);
-    let server = CodeScope::new(Workspace::new(dir.path()).unwrap());
+    let server = AstLens::new(Workspace::new(dir.path()).unwrap());
     let handle = tokio::spawn(async move {
         server
             .serve(server_io)
@@ -83,7 +83,7 @@ async fn mcp_session_over_jsonrpc() {
             }),
         )
         .await;
-    assert_eq!(init["result"]["serverInfo"]["name"], "code-scope-mcp");
+    assert_eq!(init["result"]["serverInfo"]["name"], "astlens");
     assert!(init["result"]["capabilities"]["tools"].is_object());
     client
         .send(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
