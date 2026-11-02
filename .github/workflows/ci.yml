@@ -54,3 +54,6 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo test --locked
+      # The hook runs under Git Bash on Windows, where its path handling is unverified.
+      - if: runner.os != 'Windows'
+        run: scripts/test-guard.sh

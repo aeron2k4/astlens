@@ -9,8 +9,14 @@
 #   cover source files inside the session's working directory. Searches over
 #   non-code files (a non-code path, or a glob/type/include naming no source
 #   extension), over piped input, or outside the working directory are allowed.
+# - cat/tac/nl/more/less/most/bat/head/tail/sed/awk and rtk read/smart in Bash:
+#   deny reading source files inside the working directory, the same as Read.
+#   Output limited to at most $CODE_SCOPE_MAX_READ_LINES lines (head -n 50,
+#   sed -n 1,50p, rtk read --head-lines 50), sent to a file, counted or hashed
+#   (cat x.rs | wc -l), and in-place edits (sed -i) are allowed.
 # Bash parsing is best effort: commands it cannot see into (eval, scripts,
-# find -exec, xargs) are allowed.
+# find -exec, xargs, "$(cat x.rs)" inside quotes) and other programs that can
+# print a file (python, xxd, cut) are allowed.
 input=$(cat)
 tool=$(jq -r '.tool_name // empty' <<<"$input")
 cwd=$(jq -r '.cwd // empty' <<<"$input")
@@ -21,6 +27,11 @@ CODE_EXT="\\.($EXTS)\$"
 # A glob or extension list naming a source extension: *.rs, *.{ts,tsx}, rs,py
 CODE_GLOB="(^|[.,{])($EXTS)([,}]|\$)"
 CODE_TYPES='^(rust|py|python|js|jsx|ts|tsx|typescript|go|c|cpp|java|cs|csharp)$'
+
+MAX_LINES=${CODE_SCOPE_MAX_READ_LINES:-300}
+[[ "$MAX_LINES" =~ ^[0-9]+$ ]] || MAX_LINES=300
+
+READ_HINT="Use code-scope MCP tools instead (load with ToolSearch \"select:mcp__code-scope__get_file_outline,mcp__code-scope__read_symbol,mcp__code-scope__search_symbols,mcp__code-scope__read_file_pruned\"): get_file_outline / read_symbol / read_file_pruned. To rewrite a whole function or class use replace_symbol, to add one use insert_symbol. To see a few lines, limit the output to at most $MAX_LINES lines, e.g. sed -n 10,60p."
 
 GREP_HINT='Use code-scope MCP tools instead (load with ToolSearch "select:mcp__code-scope__search_text,mcp__code-scope__find_references"): search_text for a literal or regex (.gitignore-aware, shows the enclosing symbol; takes dir), find_references for uses of a symbol. Searching non-code files stays allowed: pass a non-code path, or a filter such as --include="*.md" / -g "*.md" / type md.'
 
@@ -62,7 +73,8 @@ path_has_code() {
 # Split a shell command into words. Unquoted | becomes the word "|", other
 # unquoted separators (; & ( ) ` newline, $( ) become ";". Quotes are removed.
 lex() {
-  local s=$1 i c q='' w='' n=${#1} has=0
+  local s=$1 i c q='' w='' n=${#1} has=0 d rest line
+  local -a heredocs=()
   WORDS=()
   for ((i = 0; i < n; i++)); do
     c=${s:i:1}
@@ -86,6 +98,42 @@ lex() {
           WORDS+=('|')
         else
           WORDS+=(';')
+        fi
+        # Heredoc bodies start after this newline; they are data, not commands.
+        if [ "$c" = $'\n' ] && ((${#heredocs[@]})); then
+          rest=${s:i+1}
+          for d in "${heredocs[@]}"; do
+            while [ -n "$rest" ]; do
+              line=${rest%%$'\n'*}
+              if [[ "$rest" == *$'\n'* ]]; then rest=${rest#*$'\n'}; else rest=''; fi
+              [ "${line#"${line%%[!$'\t']*}"}" = "$d" ] && break
+            done
+          done
+          heredocs=()
+          i=$((n - ${#rest} - 1))
+        fi
+        ;;
+      '<')
+        if [ "${s:i:3}" = '<<<' ]; then
+          w+='<<<'; has=1; ((i += 2))
+        elif [ "${s:i:2}" = '<<' ]; then
+          ((has)) && WORDS+=("$w"); w=''; has=0
+          ((i += 2))
+          [ "${s:i:1}" = - ] && ((i++))
+          while [ "${s:i:1}" = ' ' ] || [ "${s:i:1}" = $'\t' ]; do ((i++)); done
+          d=''
+          while ((i < n)); do
+            case "${s:i:1}" in
+              ' ' | $'\t' | $'\n' | ';' | '|' | '&' | ')') break ;;
+              "'" | '"' | '\') ;;
+              *) d+=${s:i:1} ;;
+            esac
+            ((i++))
+          done
+          heredocs+=("$d")
+          ((i--))
+        else
+          w+=$c; has=1
         fi
         ;;
       '$')
@@ -222,10 +270,209 @@ check_search() {
   return 1
 }
 
+# 0 when reading path $1 (relative to dir $2) reads a source file. Unlike
+# path_has_code, a directory does not count and a glob is expanded.
+is_code_file() {
+  local abs m
+  abs=$(absolute "$1" "$2")
+  inside_workspace "$abs" || return 1
+  if [[ "$1" == *[*?[{]* ]]; then
+    [[ "$1" =~ $CODE_EXT || "$1" =~ $CODE_GLOB ]] && return 0
+    while IFS= read -r m; do
+      [[ "$m" =~ $CODE_EXT ]] && [ -f "$m" ] && return 0
+    done < <(compgen -G "$abs")
+    return 1
+  fi
+  [ -f "$abs" ] && [[ "$abs" =~ $CODE_EXT ]]
+}
+
+# Split redirections off an argument list: ARGS gets the rest, INPUT the file
+# after <, and STDOUT_GONE is 1 when standard output goes to a file.
+parse_redirects() {
+  ARGS=(); INPUT=''; STDOUT_GONE=0
+  while (($#)); do
+    case "$1" in
+      '>' | '>>' | 1'>' | 1'>>') STDOUT_GONE=1; shift ;;
+      2'>' | 2'>>' | '<<<') shift ;;
+      '<') INPUT=${2-}; shift ;;
+      '>'* | 1'>'*) STDOUT_GONE=1 ;;
+      2'>'* | '<<<'*) ;;
+      '<'*) INPUT=${1#<} ;;
+      *) ARGS+=("$1") ;;
+    esac
+    (($#)) && shift
+  done
+}
+
+small() { [[ "$1" =~ ^[0-9]+$ ]] && ((10#$1 <= MAX_LINES)); }
+
+# Parse sed arguments (from ARGS): FILES gets the input files, SED_QUIET,
+# SED_INPLACE and SCRIPTS the rest.
+parse_sed() {
+  FILES=(); SCRIPTS=(); SED_QUIET=0; SED_INPLACE=0
+  local -a words=()
+  local a k opts=1
+  set -- "${ARGS[@]}"
+  while (($#)); do
+    a=$1; shift
+    if ((opts)) && [ "$a" = -- ]; then
+      opts=0
+    elif ((opts)) && [[ "$a" == --* ]]; then
+      case "$a" in
+        --quiet | --silent) SED_QUIET=1 ;;
+        --in-place*) SED_INPLACE=1 ;;
+        --expression=*) SCRIPTS+=("${a#*=}") ;;
+        --expression) SCRIPTS+=("${1-}"); shift ;;
+        --file=*) SCRIPTS+=('') ;;
+        --file) SCRIPTS+=(''); shift ;;
+        --line-length) shift ;;
+      esac
+    elif ((opts)) && [[ "$a" == -?* ]]; then
+      for ((k = 1; k < ${#a}; k++)); do
+        case "${a:k:1}" in
+          n) SED_QUIET=1 ;;
+          i) SED_INPLACE=1; break ;;
+          e) if ((k + 1 < ${#a})); then SCRIPTS+=("${a:k+1}"); else SCRIPTS+=("${1-}"); shift; fi; break ;;
+          f) SCRIPTS+=(''); ((k + 1 < ${#a})) || shift; break ;;
+          l) ((k + 1 < ${#a})) || shift; break ;;
+        esac
+      done
+    else
+      words+=("$a")
+    fi
+  done
+  if ((${#SCRIPTS[@]} == 0)) && ((${#words[@]})); then
+    SCRIPTS=("${words[0]}")
+    FILES=("${words[@]:1}")
+  else
+    FILES=("${words[@]}")
+  fi
+}
+
+# 0 when program $1 with arguments ARGS prints at most MAX_LINES lines per input.
+limited_output() {
+  local prog=$1 a
+  case "$prog" in
+    head | tail)
+      set -- "${ARGS[@]}"
+      while (($#)); do
+        a=$1; shift
+        case "$a" in
+          -n | --lines) small "${1-}" || return 1; shift ;;
+          --lines=*) small "${a#*=}" || return 1 ;;
+          -n*) small "${a#-n}" || return 1 ;;
+          -c* | --bytes*) return 1 ;;
+          -[0-9]*) small "${a#-}" || return 1 ;;
+        esac
+      done
+      return 0
+      ;;
+    sed)
+      parse_sed
+      ((SED_QUIET)) && ((${#SCRIPTS[@]} == 1)) || return 1
+      [[ "${SCRIPTS[0]}" =~ ^([0-9]+)(,([0-9]+))?p$ ]] || return 1
+      local first=$((10#${BASH_REMATCH[1]})) last=${BASH_REMATCH[3]:-${BASH_REMATCH[1]}}
+      ((10#$last >= first)) && small $((10#$last - first + 1))
+      ;;
+    read) # rtk read
+      set -- "${ARGS[@]}"
+      while (($#)); do
+        a=$1; shift
+        case "$a" in
+          -m | --max-lines | --head-lines | --tail-lines) small "${1-}" && return 0; shift ;;
+          --max-lines=* | --head-lines=* | --tail-lines=*) small "${a#*=}" && return 0 ;;
+        esac
+      done
+      return 1
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+# 0 when reader argv $3... must be denied. $1 = dir it runs in, $2 = index of
+# the word ending its segment in WORDS.
+check_read() {
+  local dir=$1 end=$2 prog=$3 a code=0 k
+  shift 3
+  parse_redirects "$@"
+  ((STDOUT_GONE)) && return 1
+  local stdin_file=$INPUT
+  local -a saved=("${ARGS[@]}") inputs=()
+  case "$prog" in
+    sed)
+      parse_sed
+      ((SED_INPLACE)) && return 1
+      inputs=("${FILES[@]}")
+      ;;
+    awk | gawk | mawk | nawk)
+      local script=1
+      set -- "${ARGS[@]}"
+      while (($#)); do
+        a=$1; shift
+        case "$a" in
+          -f | --file) script=0; shift ;;
+          -i | --include) [ "${1-}" = inplace ] && return 1; shift ;;
+          -v | -F | --assign | --field-separator) shift ;;
+          -*) ;;
+          *) if ((script)); then script=0; else inputs+=("$a"); fi ;;
+        esac
+      done
+      ;;
+    *)
+      for a in "${ARGS[@]}"; do
+        [[ "$a" == -* ]] || inputs+=("$a")
+      done
+      ;;
+  esac
+  [ -n "$stdin_file" ] && inputs+=("$stdin_file")
+  for a in "${inputs[@]}"; do
+    is_code_file "$a" "$dir" && code=1
+  done
+  ((code)) || return 1
+
+  ARGS=("${saved[@]}")
+  limited_output "$prog" && return 1
+
+  # Piped: fine when the next command only counts, hashes or limits the output.
+  [ "${WORDS[end]-}" = '|' ] || return 0
+  local -a next=()
+  for ((k = end + 1; k < ${#WORDS[@]}; k++)); do
+    [ "${WORDS[k]}" = ';' ] || [ "${WORDS[k]}" = '|' ] && break
+    next+=("${WORDS[k]}")
+  done
+  command_argv "${next[@]}"
+  ((${#ARGV[@]})) || return 0
+  case "${ARGV[0]##*/}" in
+    wc | sha1sum | sha224sum | sha256sum | sha384sum | sha512sum | md5sum | b2sum | shasum | cksum) return 1 ;;
+  esac
+  parse_redirects "${ARGV[@]:1}"
+  case "${ARGV[0]##*/}" in
+    head | tail | sed) limited_output "${ARGV[0]##*/}" && return 1 ;;
+  esac
+  return 0
+}
+
+# Drop VAR=value prefixes, shell keywords and wrapper commands from a command:
+# ARGV gets the rest, UNDER_RTK is 1 when rtk was one of the wrappers.
+command_argv() {
+  local -a seg=("$@")
+  local j=0
+  UNDER_RTK=0
+  while ((j < ${#seg[@]})); do
+    case "${seg[j]}" in
+      rtk) UNDER_RTK=1; ((j++)) ;;
+      *=* | sudo | command | exec | env | time | nice | nohup | bypass | \
+        if | then | else | elif | do | while | until | '{' | '!') ((j++)) ;;
+      *) break ;;
+    esac
+  done
+  ARGV=("${seg[@]:j}")
+}
+
 check_bash() {
   local cmd
   cmd=$(jq -r '.tool_input.command // empty' <<<"$input")
-  [[ "$cmd" =~ (grep|rg) ]] || exit 0
+  [[ "$cmd" =~ (grep|rg|cat|tac|nl|more|less|most|bat|head|tail|sed|awk|read|smart) ]] || exit 0
   lex "$cmd"
 
   local dir=$cwd piped=0 i=0 n=${#WORDS[@]}
@@ -238,15 +485,9 @@ check_bash() {
       continue
     fi
     if ((${#seg[@]})); then
-      # Drop VAR=value prefixes and wrapper commands.
-      local j=0
-      while ((j < ${#seg[@]})); do
-        case "${seg[j]}" in
-          *=* | sudo | command | exec | env | time | nice | nohup | rtk | bypass) ((j++)) ;;
-          *) break ;;
-        esac
-      done
-      local -a argv=("${seg[@]:j}")
+      command_argv "${seg[@]}"
+      local -a argv=("${ARGV[@]}")
+      local under_rtk=$UNDER_RTK
       case "${argv[0]##*/}" in
         cd) dir=$(absolute "${argv[1]:-$HOME}" "$dir") ;;
         grep | egrep | fgrep | ugrep | rg)
@@ -256,6 +497,14 @@ check_bash() {
         git)
           [ "${argv[1]-}" = grep ] && check_search "$dir" 0 "${argv[@]}" &&
             deny "Searching source code with git grep is blocked. $GREP_HINT"
+          ;;
+        cat | tac | nl | more | less | most | bat | batcat | head | tail | sed | awk | gawk | mawk | nawk)
+          check_read "$dir" "$i" "${argv[0]##*/}" "${argv[@]:1}" &&
+            deny "Reading source code with ${argv[0]##*/} is blocked. $READ_HINT"
+          ;;
+        read | smart)
+          ((under_rtk)) && check_read "$dir" "$i" "${argv[0]}" "${argv[@]:1}" &&
+            deny "Reading source code with rtk ${argv[0]} is blocked. $READ_HINT"
           ;;
       esac
     fi
@@ -272,8 +521,7 @@ case "$tool" in
     limit=$(jq -r '.tool_input.limit // empty' <<<"$input")
     [[ "$f" =~ $CODE_EXT ]] || exit 0
     inside_workspace "$(absolute "$f" "$cwd")" || exit 0
-    max=${CODE_SCOPE_MAX_READ_LINES:-300}
-    [[ "$max" =~ ^[0-9]+$ ]] || max=300
+    max=$MAX_LINES
     # Without a limit, Read returns up to 2000 lines even from an offset.
     if [[ "$limit" =~ ^[0-9]+$ ]] && ((limit <= max)); then
       exit 0

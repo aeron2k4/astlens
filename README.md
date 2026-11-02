@@ -127,6 +127,12 @@ It does three things, all at user scope so they apply to every project:
      piped input (`cargo test | grep FAILED`) or outside the workspace is
      allowed. Bash parsing is best effort: `eval`, scripts, `find -exec` and
      `xargs` are not inspected.
+   - denies reading those files through Bash: `cat`, `tac`, `nl`, `more`, `less`,
+     `most`, `bat`, `head`, `tail`, `sed`, `awk`, `rtk read` and `rtk smart`.
+     Output limited to at most 300 lines (`head -n 50`, `sed -n 1,50p`,
+     `rtk read --head-lines 50`), sent to a file, counted or hashed
+     (`cat x.rs | wc -l`), and `sed -i` are allowed. Other programs that can
+     print a file (`python`, `xxd`, `cut`) are not inspected.
 
    The hook is [`scripts/code-scope-guard.sh`](scripts/code-scope-guard.sh).
 3. Add a short instruction block to `~/.claude/CLAUDE.md`.
@@ -171,6 +177,7 @@ generated notes.
 cargo test
 cargo fmt
 cargo clippy --all-targets -- -D warnings
+scripts/test-guard.sh   # table test for the hook; needs jq
 ```
 
 `cargo bench --bench report` measures this crate's own `src/`. To regenerate
