@@ -91,9 +91,10 @@ fn file_changes(root: &Path, spec: DiffSpec<'_>, diff: &git::FileDiff) -> Result
         other_lines: changed_lines,
         parsed: false,
     };
-    let Some(lang) = Lang::from_path(Path::new(&diff.path)) else {
+    let path = Path::new(&diff.path);
+    if Lang::from_path(path).is_none() {
         return Ok(unparsed);
-    };
+    }
     let old = if diff.added {
         Some(String::new())
     } else {
@@ -111,8 +112,8 @@ fn file_changes(root: &Path, spec: DiffSpec<'_>, diff: &git::FileDiff) -> Result
     };
     let (old_source, new_source) = (old, new);
     let (Ok(old), Ok(new)) = (
-        parser::parse_source(lang, &old_source),
-        parser::parse_source(lang, &new_source),
+        parser::parse_path(path, &old_source),
+        parser::parse_path(path, &new_source),
     ) else {
         return Ok(unparsed);
     };

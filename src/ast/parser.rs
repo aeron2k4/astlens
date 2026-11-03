@@ -65,7 +65,7 @@ impl Lang {
             "ts" | "mts" | "cts" => Lang::TypeScript,
             "tsx" => Lang::Tsx,
             "go" => Lang::Go,
-            // `.h` is read as C; C++ headers still parse, with error recovery.
+            // `parse_path` also tries C++ on a `.h` file that fails as C.
             "c" | "h" => Lang::C,
             "cc" | "cpp" | "cxx" | "c++" | "hh" | "hpp" | "hxx" | "h++" | "ipp" | "tpp" => {
                 Lang::Cpp
@@ -401,7 +401,18 @@ mod deltas {
 pub fn parse_path(path: &Path, source: &str) -> Result<ParsedFile, ParseError> {
     let lang = Lang::from_path(path)
         .ok_or_else(|| ParseError::UnsupportedLanguage(path.display().to_string()))?;
-    parse_source(lang, source)
+    let parsed = parse_source(lang, source)?;
+    let is_header = path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("h"));
+    if !is_header || !parsed.has_errors {
+        return Ok(parsed);
+    }
+    // `.h` does not tell C from C++. A file both grammars reject, for instance
+    // over a macro, goes to the one that makes more of it.
+    let cpp = parse_source(Lang::Cpp, source)?;
+    let better = !cpp.has_errors || cpp.symbols.len() > parsed.symbols.len();
+    Ok(if better { cpp } else { parsed })
 }
 
 /// Time allowed for the symbol query on one file. Ordinary files need far less,
@@ -1208,6 +1219,23 @@ macro_rules! m { () => {} }
             start(Lang::Go, "package p\n\ntype ( T int; U int )\n", "U"),
             "U int )\n"
         );
+    }
+
+    #[test]
+    fn headers_fall_back_to_cpp() {
+        let path = Path::new("x.h");
+        let c = parse_path(path, "struct point { int x; };\nint add(int a, int b);\n").unwrap();
+        assert_eq!(c.lang, Lang::C);
+
+        let src = "namespace n {\nclass Foo {\npublic:\n  int bar() { return 1; }\n};\n}\n";
+        let cpp = parse_path(path, src).unwrap();
+        assert_eq!(cpp.lang, Lang::Cpp);
+        assert!(!cpp.has_errors);
+        let bar = cpp.symbols.iter().find(|s| s.name == "bar").unwrap();
+        assert_eq!(bar.qualified_name(), "n::Foo::bar");
+
+        // Only `.h` is ambiguous.
+        assert_eq!(parse_path(Path::new("x.c"), src).unwrap().lang, Lang::C);
     }
 
     #[test]
