@@ -627,11 +627,28 @@ fn find_body(node: Node<'_>) -> Option<Node<'_>> {
 
 const MAX_SIGNATURE_LEN: usize = 240;
 
+/// Where the header ends: at the body, or before comments right above it.
+fn header_end(node: Node<'_>, body_start: usize) -> usize {
+    let mut cursor = node.walk();
+    let mut end = body_start;
+    let before_body: Vec<Node<'_>> = node
+        .children(&mut cursor)
+        .take_while(|child| child.end_byte() <= body_start)
+        .collect();
+    for child in before_body.iter().rev() {
+        if !child.is_extra() {
+            break;
+        }
+        end = child.start_byte();
+    }
+    end
+}
+
 /// The declaration header: text up to the body, whitespace-collapsed.
 fn signature(node: Node<'_>, body: Option<(usize, usize)>, source: &str) -> String {
     let start = node.start_byte();
     let end = match body {
-        Some((body_start, _)) => body_start,
+        Some((body_start, _)) => header_end(node, body_start),
         None => node.end_byte(),
     };
     let raw = source.get(start..end).unwrap_or("");
@@ -1026,6 +1043,26 @@ macro_rules! m { () => {} }
 
         let parsed = parse_source(lang, "function f() {}\n").unwrap();
         assert!(!parsed.incomplete);
+    }
+
+    #[test]
+    fn signature_stops_before_comments_above_the_body() {
+        let src = "def f(a):  # why\n    # more\n    return a\n";
+        let parsed = parse_source(Lang::Python, src).unwrap();
+        assert_eq!(parsed.symbols[0].signature, "def f(a)");
+
+        let src = "fn g() /* note */ {\n}\n";
+        let parsed = parse_source(Lang::Rust, src).unwrap();
+        assert_eq!(parsed.symbols[0].signature, "fn g()");
+
+        // A body nested in a child keeps the header in front of it.
+        let src = "const h = (a) => {\n  return a;\n};\n";
+        let parsed = parse_source(Lang::JavaScript, src).unwrap();
+        assert!(
+            parsed.symbols[0].signature.contains("(a)"),
+            "{:?}",
+            parsed.symbols
+        );
     }
 
     #[test]

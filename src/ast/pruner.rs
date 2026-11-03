@@ -65,6 +65,11 @@ pub fn prune(lang: Lang, source: &str, symbols: &[Symbol], opts: &PruneOptions) 
         return result;
     }
 
+    // No symbols means an empty outline, so show the start of the file instead.
+    if symbols.is_empty() {
+        return PruneResult::new(truncate_lines(source, budget), Strategy::Truncated, 0);
+    }
+
     let outline = render_outline(symbols, usize::MAX);
     if estimate_tokens(&outline) <= budget {
         return PruneResult::new(outline, Strategy::Outline, 0);
@@ -200,6 +205,24 @@ fn truncate_lines(text: &str, budget: usize) -> String {
         }
         out.push_str(line);
     }
+    // A first line over budget would leave nothing: keep what fits of it.
+    if out.is_empty() {
+        let tokens = if budget > marker_tokens {
+            budget - marker_tokens
+        } else {
+            budget
+        };
+        let line = text.lines().next().unwrap_or("");
+        // One byte of the room goes to the line break.
+        let mut cut = (tokens * 4).saturating_sub(1).min(line.len());
+        while !line.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        if cut > 0 {
+            out.push_str(&line[..cut]);
+            out.push('\n');
+        }
+    }
     if estimate_tokens(&out) + marker_tokens <= budget {
         out.push_str(TRUNCATION_MARKER);
     }
@@ -313,6 +336,43 @@ fn other() {
                 r.strategy
             );
         }
+    }
+
+    #[test]
+    fn long_first_line_still_shows_something() {
+        let src =
+            "def run(argument_one, argument_two, argument_three, argument_four):\n    return 1\n";
+        let parsed = parse_source(Lang::Python, src).unwrap();
+        for budget in 1..=20 {
+            let opts = PruneOptions {
+                max_tokens: budget,
+                keep: vec![],
+            };
+            let r = prune(Lang::Python, src, &parsed.symbols, &opts);
+            assert!(!r.text.is_empty(), "budget {budget}");
+            assert!(r.estimated_tokens <= budget, "budget {budget}: {}", r.text);
+        }
+    }
+
+    #[test]
+    fn multibyte_first_line_is_cut_on_a_character() {
+        let top = "é".repeat(100);
+        let text = truncate_lines(&top, 5);
+        assert!(text.starts_with('é'));
+        assert!(estimate_tokens(&text) <= 5);
+    }
+
+    #[test]
+    fn file_without_symbols_shows_its_start() {
+        let src = "const data = [\n1,\n2,\n];\n".repeat(50);
+        let opts = PruneOptions {
+            max_tokens: 30,
+            keep: vec![],
+        };
+        let r = prune(Lang::JavaScript, &src, &[], &opts);
+        assert_eq!(r.strategy, Strategy::Truncated);
+        assert!(r.text.starts_with("const data = ["), "{}", r.text);
+        assert!(r.estimated_tokens <= 30);
     }
 
     #[test]
