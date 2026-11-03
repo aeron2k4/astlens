@@ -529,7 +529,7 @@ fn extract_symbols(lang: Lang, root: Node<'_>, source: &str) -> Result<Vec<Symbo
                 signature: signature(node, body, source),
                 start_line: node.start_position().row + 1,
                 end_line: node.end_position().row + 1,
-                start_byte: node.start_byte(),
+                start_byte: declaration_start(node),
                 end_byte: node.end_byte(),
                 body,
                 depth: 0,
@@ -630,8 +630,14 @@ pub fn line_number(source: &str, byte: usize) -> usize {
 
 /// Where the lines of `sym` begin: the start of its first line, moved up
 /// over the doc comments, attributes and decorators directly above it, but
-/// never into the lines of a symbol that ends before it.
+/// never into the lines of a symbol that ends before it. When other code
+/// precedes `sym` on its first line, that code is not part of the symbol, so
+/// it begins exactly at its own first byte.
 pub fn symbol_start(parsed: &ParsedFile, source: &str, sym: &Symbol) -> usize {
+    let line = line_start(source, sym.start_byte);
+    if !source[line..sym.start_byte].trim().is_empty() {
+        return sym.start_byte;
+    }
     let floor = parsed
         .symbols
         .iter()
@@ -643,7 +649,42 @@ pub fn symbol_start(parsed: &ParsedFile, source: &str, sym: &Symbol) -> usize {
                 .find('\n')
                 .map_or(source.len(), |i| end + i + 1)
         });
-    attached_start(parsed.lang, source, line_start(source, sym.start_byte)).max(floor)
+    attached_start(parsed.lang, source, line).max(floor)
+}
+
+/// The first byte of the declaration around `node`, taking in what the grammar
+/// keeps outside the definition but that belongs to it when it shares its
+/// first line: `export` and `declare`, Go's `type`, `template <...>`,
+/// `extern "C"`, and attributes or decorators written in front of it.
+fn declaration_start(node: Node<'_>) -> usize {
+    let row = node.start_position().row;
+    let mut current = node;
+    loop {
+        if let Some(prev) = current.prev_named_sibling()
+            && matches!(prev.kind(), "attribute_item" | "decorator")
+            && prev.start_position().row == row
+        {
+            current = prev;
+            continue;
+        }
+        let Some(parent) = current.parent() else {
+            break;
+        };
+        let wraps = match parent.kind() {
+            "export_statement"
+            | "ambient_declaration"
+            | "template_declaration"
+            | "linkage_specification" => true,
+            // `type T int` holds one spec; `type ( ... )` is a group of them.
+            "type_declaration" => parent.child_count() == 2,
+            _ => false,
+        };
+        if !wraps || parent.start_position().row != row {
+            break;
+        }
+        current = parent;
+    }
+    current.start_byte()
 }
 
 /// Move `start` (a line start) up over the comment, attribute and decorator
@@ -1086,6 +1127,39 @@ macro_rules! m { () => {} }
         // Never reaches into the previous symbol, even without a blank line.
         let rust = "#[inline] fn a() {}\n#[cfg(test)]\nfn b() {}\n";
         assert_eq!(start_line(Lang::Rust, rust, "b"), 2);
+    }
+
+    #[test]
+    fn symbol_start_stops_at_other_code_on_its_line() {
+        let start = |lang, src: &str, name: &str| {
+            let parsed = parse_source(lang, src).unwrap();
+            let sym = parsed.symbols.iter().find(|s| s.name == name).unwrap();
+            let start = symbol_start(&parsed, src, sym);
+            assert!(start <= sym.end_byte, "{name} starts after its end");
+            src[start..].to_string()
+        };
+        assert_eq!(
+            start(Lang::Rust, "struct A; struct B;\n", "B"),
+            "struct B;\n"
+        );
+        assert_eq!(
+            start(Lang::JavaScript, "const k = 1; function f() {}\n", "f"),
+            "function f() {}\n"
+        );
+        // Indentation alone is not other code.
+        assert_eq!(
+            start(Lang::Rust, "impl P {\n    fn m(&self) {}\n}\n", "m"),
+            "    fn m(&self) {}\n}\n"
+        );
+        // Only a prefix on the definition's own line belongs to it.
+        assert_eq!(
+            start(Lang::Go, "package p\n\ntype (\n\tT int\n)\n", "T"),
+            "\tT int\n)\n"
+        );
+        assert_eq!(
+            start(Lang::Go, "package p\n\ntype ( T int; U int )\n", "U"),
+            "U int )\n"
+        );
     }
 
     #[test]

@@ -206,7 +206,8 @@ impl Workspace {
     /// Replace the source of one symbol with `new_source`, which covers the
     /// same lines `read_symbol` shows (from the start of the first line, with
     /// doc comments, attributes and decorators directly above and indentation
-    /// included; empty deletes the symbol). `line` picks one of
+    /// included; empty deletes the symbol). Other code sharing those lines is
+    /// left alone. `line` picks one of
     /// several symbols sharing the name. The file is re-read rather than
     /// taken from the cache, and the write is refused if it would introduce
     /// syntax errors.
@@ -277,8 +278,19 @@ impl Workspace {
         let (pos, text, place) = match anchor {
             Some(Anchor::After(name)) => {
                 let sym = unique_symbol(&parsed, rel, name, line)?;
-                let (pos, text) = match source[sym.end_byte..].find('\n') {
-                    Some(i) => (sym.end_byte + i + 1, format!("\n{body}\n")),
+                // A symbol that follows, or the closing of its parent, keeps
+                // the rest of the line from being part of this symbol.
+                let line_end = source[sym.end_byte..].find('\n').map(|i| sym.end_byte + i);
+                let until = line_end.unwrap_or(source.len());
+                let code_follows = parsed.symbols.iter().any(|s| {
+                    (s.start_byte >= sym.end_byte && s.start_byte < until)
+                        || (s.start_byte < sym.start_byte
+                            && s.end_byte > sym.end_byte
+                            && s.end_byte <= until)
+                });
+                let (pos, text) = match line_end {
+                    _ if code_follows => (sym.end_byte, format!("\n{body}\n")),
+                    Some(end) => (end + 1, format!("\n{body}\n")),
                     None => (source.len(), format!("\n\n{body}\n")),
                 };
                 (pos, text, format!("after {}", sym.qualified_name()))
@@ -286,9 +298,15 @@ impl Workspace {
             Some(Anchor::Before(name)) => {
                 let sym = unique_symbol(&parsed, rel, name, line)?;
                 let pos = symbol_start(&parsed, &source, sym);
+                // Other code precedes the symbol on its line: start a new one.
+                let sep = if pos == 0 || source[..pos].ends_with('\n') {
+                    ""
+                } else {
+                    "\n"
+                };
                 (
                     pos,
-                    format!("{body}\n\n"),
+                    format!("{sep}{body}\n\n"),
                     format!("before {}", sym.qualified_name()),
                 )
             }
@@ -1242,6 +1260,207 @@ mod tests {
         assert_eq!(
             fs::read_to_string(&file).unwrap(),
             "#[inline] fn one() {}\n#[derive(Clone)]\nstruct Two;\n\nfn three() { one() }\n"
+        );
+    }
+
+    /// (file, source, symbol, new source, expected file)
+    const SAME_LINE_REPLACES: &[(&str, &str, &str, &str, &str)] = &[
+        (
+            "a.js",
+            "const keep = 1; function b() { return 1; }\n",
+            "b",
+            "function b() { return 2; }",
+            "const keep = 1; function b() { return 2; }\n",
+        ),
+        (
+            "del.js",
+            "const keep = 1; function b() { return 1; }\n",
+            "b",
+            "",
+            "const keep = 1; \n",
+        ),
+        (
+            "a.rs",
+            "use std::fs; fn b() {}\nfn c() {}\n",
+            "b",
+            "fn b() { 1; }",
+            "use std::fs; fn b() { 1; }\nfn c() {}\n",
+        ),
+        (
+            "a.go",
+            "package p; func b() {}\n",
+            "b",
+            "func b() { _ = 1 }",
+            "package p; func b() { _ = 1 }\n",
+        ),
+        (
+            "sib.rs",
+            "fn a() {} fn b() {}\nfn c() {}\n",
+            "b",
+            "fn b2() {}",
+            "fn a() {} fn b2() {}\nfn c() {}\n",
+        ),
+        (
+            "min.js",
+            "function a(){}function b(){}\n",
+            "b",
+            "function b2(){}",
+            "function a(){}function b2(){}\n",
+        ),
+        (
+            "A.java",
+            "class J { void f() {} }\n",
+            "f",
+            "void f() { int a; }",
+            "class J { void f() { int a; } }\n",
+        ),
+        (
+            "m.rs",
+            "impl P { fn m1(&self) {} fn m2(&self) {} }\n",
+            "m1",
+            "fn m1(&self) { 1; }",
+            "impl P { fn m1(&self) { 1; } fn m2(&self) {} }\n",
+        ),
+    ];
+
+    /// Prefixes the grammar keeps outside the definition: `read_symbol` shows
+    /// them, and `new_source` replaces them. (file, source, symbol, shown)
+    const ATTACHED_PREFIXES: &[(&str, &str, &str, &str)] = &[
+        (
+            "e1.js",
+            "export function foo() {}\n",
+            "foo",
+            "export function foo() {}",
+        ),
+        (
+            "e2.js",
+            "export const bar = () => 2;\n",
+            "bar",
+            "export const bar = () => 2;",
+        ),
+        (
+            "e3.js",
+            "export default class Baz {}\n",
+            "Baz",
+            "export default class Baz {}",
+        ),
+        (
+            "e4.ts",
+            "export declare function f(): void;\n",
+            "f",
+            "export declare function f(): void;",
+        ),
+        (
+            "d.ts",
+            "class C {\n  @Get() m() {}\n}\n",
+            "m",
+            "  @Get() m() {}",
+        ),
+        (
+            "t.go",
+            "package p\n\ntype T struct{}\n",
+            "T",
+            "type T struct{}",
+        ),
+        (
+            "t.cpp",
+            "template <typename T> class C {};\n",
+            "C",
+            "template <typename T> class C {}",
+        ),
+        (
+            "l.cpp",
+            "extern \"C\" void f() {}\n",
+            "f",
+            "extern \"C\" void f() {}",
+        ),
+        ("at.rs", "#[inline] fn a() {}\n", "a", "#[inline] fn a() {}"),
+    ];
+
+    #[test]
+    fn replace_keeps_other_code_on_the_line() {
+        let dir = tempfile::tempdir().unwrap();
+        for (file, source, _, _, _) in SAME_LINE_REPLACES {
+            fs::write(dir.path().join(file), source).unwrap();
+        }
+        let ws = Workspace::new(dir.path()).unwrap();
+        for (file, _, name, new_source, expected) in SAME_LINE_REPLACES {
+            ws.replace_symbol(file, name, None, new_source)
+                .unwrap_or_else(|e| panic!("{file}: {e}"));
+            let got = fs::read_to_string(dir.path().join(file)).unwrap();
+            assert_eq!(&got, expected, "{file}");
+        }
+    }
+
+    #[test]
+    fn read_symbol_includes_prefixes_of_the_declaration() {
+        let dir = tempfile::tempdir().unwrap();
+        for (file, source, _, _) in ATTACHED_PREFIXES {
+            fs::write(dir.path().join(file), source).unwrap();
+        }
+        let ws = Workspace::new(dir.path()).unwrap();
+        for (file, source, name, shown) in ATTACHED_PREFIXES {
+            let out = ws.read_symbol(file, name).unwrap();
+            assert!(out.contains(shown), "{file}: {out}");
+            // What was read can be written back unchanged.
+            ws.replace_symbol(file, name, None, shown)
+                .unwrap_or_else(|e| panic!("{file}: {e}"));
+            let got = fs::read_to_string(dir.path().join(file)).unwrap();
+            assert_eq!(&got, source, "{file}");
+        }
+    }
+
+    #[test]
+    fn read_symbol_of_a_second_symbol_on_a_line() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.rs"), "struct A; struct B;\n").unwrap();
+        let ws = Workspace::new(dir.path()).unwrap();
+        let out = ws.read_symbol("a.rs", "B").unwrap();
+        assert!(out.ends_with("1\tstruct B;\n"), "{out}");
+    }
+
+    #[test]
+    fn insert_lands_next_to_the_anchor_on_a_shared_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.rs");
+        let ws = Workspace::new(dir.path()).unwrap();
+
+        fs::write(&file, "struct A; struct B;\n").unwrap();
+        let out = ws
+            .insert_symbol("a.rs", "struct N;", Some(Anchor::Before("B")), None)
+            .unwrap();
+        assert!(out.contains("starting at line 2"), "{out}");
+        assert_eq!(
+            fs::read_to_string(&file).unwrap(),
+            "struct A; \nstruct N;\n\nstruct B;\n"
+        );
+
+        fs::write(&file, "struct A; struct B;\n").unwrap();
+        let out = ws
+            .insert_symbol("a.rs", "struct N;", Some(Anchor::After("A")), None)
+            .unwrap();
+        assert!(out.contains("starting at line 2"), "{out}");
+        assert_eq!(
+            fs::read_to_string(&file).unwrap(),
+            "struct A;\nstruct N;\n struct B;\n"
+        );
+
+        // Stays inside the parent that closes on the same line.
+        fs::write(&file, "impl P { fn m(&self) {} }\n").unwrap();
+        ws.insert_symbol("a.rs", "fn n(&self) {}", Some(Anchor::After("m")), None)
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(&file).unwrap(),
+            "impl P { fn m(&self) {}\nfn n(&self) {}\n }\n"
+        );
+
+        // A trailing comment stays with the anchor.
+        fs::write(&file, "fn a() {} // note\nfn b() {}\n").unwrap();
+        ws.insert_symbol("a.rs", "fn n() {}", Some(Anchor::After("a")), None)
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(&file).unwrap(),
+            "fn a() {} // note\n\nfn n() {}\nfn b() {}\n"
         );
     }
 
