@@ -7,6 +7,7 @@ pub mod text;
 
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde::Serialize;
 
@@ -36,6 +37,8 @@ pub const DEFAULT_MAX_FILES: usize = 20_000;
 pub struct Found<T> {
     pub hits: Vec<T>,
     pub truncated: bool,
+    /// Files whose symbol query ran out of time, so hits may be missing.
+    pub incomplete: usize,
 }
 
 impl<T> Deref for Found<T> {
@@ -165,6 +168,7 @@ pub fn search_symbols(
         return Found {
             hits: Vec::new(),
             truncated: false,
+            incomplete: 0,
         };
     }
     let query_lower = query.to_lowercase();
@@ -174,6 +178,7 @@ pub fn search_symbols(
         .filter(|p| Lang::from_path(p).is_some())
         .collect();
 
+    let incomplete = AtomicUsize::new(0);
     let mut hits: Vec<SymbolHit> = par_flat_map(&files, |rel| {
         let file = match cache.get(&root.join(rel)) {
             Ok(f) => f,
@@ -182,6 +187,9 @@ pub fn search_symbols(
                 return Vec::new();
             }
         };
+        if file.parsed.incomplete {
+            incomplete.fetch_add(1, Ordering::Relaxed);
+        }
         let mut local = Vec::new();
         for sym in &file.parsed.symbols {
             if opts.kind.is_some_and(|k| k != sym.kind) {
@@ -211,7 +219,11 @@ pub fn search_symbols(
             .then(a.start_line.cmp(&b.start_line))
     });
     hits.truncate(opts.limit);
-    Found { hits, truncated }
+    Found {
+        hits,
+        truncated,
+        incomplete: incomplete.into_inner(),
+    }
 }
 
 #[cfg(test)]

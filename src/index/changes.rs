@@ -117,6 +117,10 @@ fn file_changes(root: &Path, spec: DiffSpec<'_>, diff: &git::FileDiff) -> Result
     ) else {
         return Ok(unparsed);
     };
+    // A symbol missing from a cut-off list would read as removed or added.
+    if old.incomplete || new.incomplete {
+        return Ok(unparsed);
+    }
 
     let (old_touched, old_other) = touched(&old, &old_source, &diff.old);
     let (new_touched, new_other) = touched(&new, &new_source, &diff.new);

@@ -427,7 +427,11 @@ impl ParseCache {
                     tracing::debug!(path = %path.display(), "parsed with syntax errors");
                 }
                 let file = Arc::new(CachedFile { source, parsed });
-                if let Some(blob) = blob {
+                // A timeout depends on the machine and its load, not on the
+                // content, so the next session gets another try.
+                if let Some(blob) = blob
+                    && !file.parsed.incomplete
+                {
                     self.queue_write(path, blob, &file);
                 }
                 file

@@ -139,7 +139,14 @@ impl Workspace {
             max_files: self.max_files,
         };
         let hits = index::search_symbols(&self.root, &self.cache, query, &opts);
-        let note = self.truncation_note(hits.truncated);
+        let mut note = self.truncation_note(hits.truncated);
+        if hits.incomplete > 0 {
+            let _ = writeln!(
+                note,
+                "… symbol search timed out, some symbols are missing (files: {})",
+                hits.incomplete
+            );
+        }
         if hits.is_empty() {
             return format!("no symbols matching {query:?}\n{note}{UNSEARCHED_NOTE}");
         }

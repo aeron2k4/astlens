@@ -141,6 +141,7 @@ pub fn find_references(
         return Found {
             hits: Vec::new(),
             truncated: false,
+            incomplete: 0,
         };
     }
     let (files, truncated) = files_under(root, dir, opts.max_files);
@@ -241,7 +242,11 @@ pub fn find_references(
         })
         .map(|c| c.hit)
         .collect();
-    Found { hits, truncated }
+    Found {
+        hits,
+        truncated,
+        incomplete: 0,
+    }
 }
 
 #[cfg(test)]
