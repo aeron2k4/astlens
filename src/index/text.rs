@@ -1,13 +1,14 @@
 //! Regex search over workspace files, annotated with the enclosing symbol.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use regex::Regex;
 use serde::Serialize;
 
 use super::cache::ParseCache;
 use super::{
-    DEFAULT_MAX_FILES, Found, enclosing_symbol, files_under, line_excerpt, par_flat_map, slash_path,
+    DEFAULT_MAX_FILES, enclosing_symbol, files_under, line_excerpt, par_flat_map, slash_path,
 };
 use crate::ast::parser::Lang;
 
@@ -30,76 +31,141 @@ pub struct TextHit {
 pub struct TextOptions {
     /// Upper bound on files walked, to keep huge repositories responsive.
     pub max_files: usize,
+    /// Number of hits to keep; the others are only counted.
+    pub limit: usize,
 }
 
 impl Default for TextOptions {
     fn default() -> Self {
         TextOptions {
             max_files: DEFAULT_MAX_FILES,
+            limit: usize::MAX,
         }
     }
 }
 
+/// Result of [`search_text`].
+#[derive(Debug, Clone)]
+pub struct TextHits {
+    /// The first `limit` hits.
+    pub hits: Vec<TextHit>,
+    /// Matching lines in all files, kept or not.
+    pub total: usize,
+    /// The walk stopped at `max_files`, so later files were not searched.
+    pub truncated: bool,
+    /// Files skipped for not being valid UTF-8.
+    pub not_utf8: usize,
+    /// Files skipped for exceeding the size limit.
+    pub oversized: usize,
+}
+
 /// Lines matching `re` in text files under `dir`, one hit per line, sorted by
-/// path and line. Binary, non-UTF-8 and oversized files are skipped.
+/// path and line. Binary, non-UTF-8 and oversized files are skipped. Only the
+/// first `limit` hits are kept and annotated; the rest are just counted.
 pub fn search_text(
     root: &Path,
     dir: &Path,
     cache: &ParseCache,
     re: &Regex,
     opts: &TextOptions,
-) -> Found<TextHit> {
+) -> TextHits {
     let (files, truncated) = files_under(root, dir, opts.max_files);
-    let hits = par_flat_map(&files, |rel| {
-        let abs = root.join(rel);
-        let Some(source) = read_text(&abs) else {
-            return Vec::new();
+    let total = AtomicUsize::new(0);
+    let not_utf8 = AtomicUsize::new(0);
+    let oversized = AtomicUsize::new(0);
+    let mut found = par_flat_map(&files, |rel| {
+        let source = match read_text(&root.join(rel)) {
+            Ok(source) => source,
+            Err(skipped) => {
+                match skipped {
+                    Unread::NotUtf8 => not_utf8.fetch_add(1, Ordering::Relaxed),
+                    Unread::Oversized => oversized.fetch_add(1, Ordering::Relaxed),
+                    Unread::Other => 0,
+                };
+                return Vec::new();
+            }
         };
 
-        // One hit per line: the first match on it.
-        let mut starts: Vec<(usize, usize)> = Vec::new();
+        // One hit per line: the first match on it. No file can hold more than
+        // `limit` of the hits kept overall, so the others need not be stored.
+        let mut kept: Vec<(usize, usize)> = Vec::new();
+        let mut matched = 0;
+        let mut last_line = 0;
         let mut line = 1;
         let mut counted = 0;
         for m in re.find_iter(&source) {
             line += source[counted..m.start()].matches('\n').count();
             counted = m.start();
-            if starts.last().is_none_or(|&(l, _)| l != line) {
-                starts.push((line, m.start()));
+            if last_line != line {
+                last_line = line;
+                matched += 1;
+                if kept.len() < opts.limit {
+                    kept.push((line, m.start()));
+                }
             }
         }
-        if starts.is_empty() {
-            return Vec::new();
-        }
+        total.fetch_add(matched, Ordering::Relaxed);
 
-        // Symbols only for source files that matched, so the walk stays cheap.
-        let parsed = Lang::from_path(rel).and_then(|_| cache.get(&abs).ok());
         let path = slash_path(rel);
-        starts
-            .into_iter()
-            .map(|(line, byte)| TextHit {
-                path: path.clone(),
-                line,
-                text: line_excerpt(&source, byte),
-                enclosing: parsed
-                    .as_ref()
-                    .and_then(|f| enclosing_symbol(&f.parsed.symbols, byte))
-                    .map(|s| s.qualified_name()),
+        kept.into_iter()
+            .map(|(line, byte)| {
+                let hit = TextHit {
+                    path: path.clone(),
+                    line,
+                    text: line_excerpt(&source, byte),
+                    enclosing: None,
+                };
+                (hit, byte)
             })
             .collect()
     });
-    Found { hits, truncated }
+    found.truncate(opts.limit);
+
+    // Symbols only for the hits returned, so the walk stays cheap.
+    let mut parsed = None;
+    let mut parsed_path = None;
+    let hits = found
+        .into_iter()
+        .map(|(mut hit, byte)| {
+            if parsed_path.as_deref() != Some(hit.path.as_str()) {
+                let abs = root.join(&hit.path);
+                parsed = Lang::from_path(&abs).and_then(|_| cache.get(&abs).ok());
+                parsed_path = Some(hit.path.clone());
+            }
+            hit.enclosing = parsed
+                .as_ref()
+                .and_then(|f| enclosing_symbol(&f.parsed.symbols, byte))
+                .map(|s| s.qualified_name());
+            hit
+        })
+        .collect();
+    TextHits {
+        hits,
+        total: total.into_inner(),
+        truncated,
+        not_utf8: not_utf8.into_inner(),
+        oversized: oversized.into_inner(),
+    }
 }
 
-fn read_text(path: &Path) -> Option<String> {
-    let meta = std::fs::metadata(path).ok()?;
+/// Why a file was left out of a search. Binary files are not worth reporting,
+/// so they count as `Other`, like files that cannot be read.
+enum Unread {
+    NotUtf8,
+    Oversized,
+    Other,
+}
+
+fn read_text(path: &Path) -> Result<String, Unread> {
+    let meta = std::fs::metadata(path).map_err(|_| Unread::Other)?;
     if meta.len() > MAX_FILE_BYTES {
-        return None;
+        return Err(Unread::Oversized);
     }
-    let bytes = std::fs::read(path).ok()?;
+    let bytes = std::fs::read(path).map_err(|_| Unread::Other)?;
     if bytes[..bytes.len().min(BINARY_SNIFF_BYTES)].contains(&0) {
-        return None;
+        return Err(Unread::Other);
     }
-    String::from_utf8(bytes).ok()
+    String::from_utf8(bytes).map_err(|_| Unread::NotUtf8)
 }
 
 #[cfg(test)]
@@ -127,6 +193,7 @@ mod tests {
         let re = Regex::new("TODO").unwrap();
         let hits = search_text(root, root, &cache, &re, &TextOptions::default());
         let found: Vec<_> = hits
+            .hits
             .iter()
             .map(|h| (h.path.as_str(), h.line, h.enclosing.as_deref()))
             .collect();
@@ -138,7 +205,7 @@ mod tests {
                 ("src/lib.rs", 3, Some("run")),
             ]
         );
-        assert_eq!(hits[2].text, "// TODO inside TODO");
+        assert_eq!(hits.hits[2].text, "// TODO inside TODO");
 
         let only_src = search_text(
             root,
@@ -147,6 +214,30 @@ mod tests {
             &re,
             &TextOptions::default(),
         );
-        assert_eq!(only_src.len(), 2);
+        assert_eq!(only_src.total, 2);
+    }
+
+    #[test]
+    fn limit_keeps_the_first_hits_and_counts_all() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("a.rs"), "fn x() {\n    // hit\n    // hit\n}\n").unwrap();
+        fs::write(root.join("b.rs"), "// hit\n").unwrap();
+
+        let opts = TextOptions {
+            limit: 2,
+            ..Default::default()
+        };
+        let cache = ParseCache::default();
+        let found = search_text(root, root, &cache, &Regex::new("hit").unwrap(), &opts);
+        assert_eq!(found.total, 3);
+        let kept: Vec<_> = found
+            .hits
+            .iter()
+            .map(|h| (h.path.as_str(), h.line, h.enclosing.as_deref()))
+            .collect();
+        assert_eq!(kept, [("a.rs", 2, Some("x")), ("a.rs", 3, Some("x"))]);
+        // The file past the limit was not parsed.
+        assert_eq!(cache.stats().parses, 1);
     }
 }

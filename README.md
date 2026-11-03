@@ -96,7 +96,7 @@ directory as the workspace root.
 | `insert_symbol`    | Add code after/before a symbol or at the end of a file; rejects syntax errors    |
 | `read_file_pruned` | File text within `max_tokens`: full → bodies elided → outline → truncated        |
 | `find_references`  | Uses of a symbol from identifier tokens (comments and strings skipped)           |
-| `search_text`      | Literal or regex search over files, honouring `.gitignore`                       |
+| `search_text`      | Literal or regex search over files, honouring `.gitignore`, skipping hidden ones |
 | `list_files`       | Files under a directory, honouring `.gitignore`                                  |
 | `changed_symbols`  | Symbols added/modified/removed by uncommitted changes or since a revision        |
 | `git_status`       | Working-tree status                                                              |

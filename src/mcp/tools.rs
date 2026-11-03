@@ -31,6 +31,8 @@ const DEFAULT_HIT_LIMIT: usize = 100;
 /// Compiled-regex size cap, so a pathological pattern fails fast.
 const MAX_REGEX_BYTES: usize = 1 << 20;
 const MAX_SYMBOL_MATCHES: usize = 5;
+/// Says what an empty result of a symbol search did not cover.
+const UNSEARCHED_NOTE: &str = "… not searched: hidden files, non-UTF-8 files, files over 2 MB\n";
 
 pub struct Workspace {
     root: PathBuf,
@@ -134,7 +136,7 @@ impl Workspace {
         let hits = index::search_symbols(&self.root, &self.cache, query, &opts);
         let note = self.truncation_note(hits.truncated);
         if hits.is_empty() {
-            return format!("no symbols matching {query:?}\n{note}");
+            return format!("no symbols matching {query:?}\n{note}{UNSEARCHED_NOTE}");
         }
         let mut out = String::new();
         for h in hits.iter() {
@@ -415,7 +417,9 @@ impl Workspace {
         let hits = refs::find_references(&self.root, &base, &self.cache, name, &opts);
         let note = self.truncation_note(hits.truncated);
         if hits.is_empty() {
-            return Ok(format!("no references to {name:?}\n{note}"));
+            return Ok(format!(
+                "no references to {name:?}\n{note}{UNSEARCHED_NOTE}"
+            ));
         }
         let mut out = String::new();
         for h in hits.iter().take(limit) {
@@ -455,27 +459,43 @@ impl Workspace {
         let re = regex::RegexBuilder::new(&source)
             .case_insensitive(case_insensitive)
             .multi_line(true)
+            .crlf(true)
             .size_limit(MAX_REGEX_BYTES)
             .build()
             .with_context(|| format!("invalid pattern {pattern:?}"))?;
         let opts = TextOptions {
             max_files: self.max_files,
+            limit,
         };
-        let hits = text::search_text(&self.root, &base, &self.cache, &re, &opts);
-        let note = self.truncation_note(hits.truncated);
-        if hits.is_empty() {
-            return Ok(format!("no matches for {pattern:?}\n{note}"));
+        let found = text::search_text(&self.root, &base, &self.cache, &re, &opts);
+        let mut note = self.truncation_note(found.truncated);
+        if found.not_utf8 + found.oversized > 0 {
+            let _ = writeln!(
+                note,
+                "… skipped {} not UTF-8 and {} over 2 MB files",
+                found.not_utf8, found.oversized
+            );
+        }
+        if found.total == 0 {
+            return Ok(format!(
+                "no matches for {pattern:?}\n{note}… hidden files were not searched; \
+                 `dir` can name a hidden directory\n"
+            ));
         }
         let mut out = String::new();
-        for h in hits.iter().take(limit) {
+        for h in &found.hits {
             let _ = write!(out, "{}:{}: {}", h.path, h.line, h.text);
             if let Some(sym) = &h.enclosing {
                 let _ = write!(out, "  [in {sym}]");
             }
             out.push('\n');
         }
-        if hits.len() > limit {
-            let _ = writeln!(out, "… {} more matching lines", hits.len() - limit);
+        if found.total > found.hits.len() {
+            let _ = writeln!(
+                out,
+                "… {} more matching lines",
+                found.total - found.hits.len()
+            );
         }
         out.push_str(&note);
         Ok(out)
@@ -912,7 +932,7 @@ impl AstLens {
     }
 
     #[tool(
-        description = "Search file contents for a literal string or regex, respecting .gitignore. Returns path:line, the line and the enclosing symbol. Use instead of grep."
+        description = "Search file contents for a literal string or regex, respecting .gitignore and skipping hidden files unless `dir` names a hidden directory. Returns path:line, the line and the enclosing symbol. Use instead of grep."
     )]
     async fn search_text(
         &self,
@@ -1049,6 +1069,61 @@ mod tests {
             ws.find_references("nope", None, false, 10)
                 .unwrap()
                 .starts_with("no references")
+        );
+    }
+
+    #[test]
+    fn search_text_matches_line_ends_of_crlf_files() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.py"), "x = bar\r\ny = 1\r\n").unwrap();
+        let ws = Workspace::new(dir.path()).unwrap();
+        let out = ws.search_text("bar$", true, false, None, 10).unwrap();
+        assert_eq!(out, "a.py:1: x = bar\n");
+        let out = ws.search_text("^y", true, false, None, 10).unwrap();
+        assert_eq!(out, "a.py:2: y = 1\n");
+    }
+
+    #[test]
+    fn empty_searches_say_what_they_did_not_cover() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join(".github")).unwrap();
+        fs::write(dir.path().join(".github/h.py"), "def needle(): pass\n").unwrap();
+        fs::write(dir.path().join("l.py"), b"# caf\xe9 needle\n").unwrap();
+        let big = format!("# needle\n{}", "x".repeat(2 * 1024 * 1024 + 1));
+        fs::write(dir.path().join("big.py"), big).unwrap();
+        let ws = Workspace::new(dir.path()).unwrap();
+
+        let out = ws.search_text("needle", false, false, None, 10).unwrap();
+        assert!(out.starts_with("no matches"), "{out}");
+        assert!(
+            out.contains("skipped 1 not UTF-8 and 1 over 2 MB files"),
+            "{out}"
+        );
+        assert!(out.contains("hidden files were not searched"), "{out}");
+        let out = ws.search("needle", None, 10);
+        assert!(out.contains("not searched: hidden files"), "{out}");
+        let out = ws.find_references("needle", None, false, 10).unwrap();
+        assert!(out.contains("not searched: hidden files"), "{out}");
+
+        let out = ws
+            .search_text("needle", false, false, Some(".github"), 10)
+            .unwrap();
+        assert!(out.starts_with(".github/h.py:1:"), "{out}");
+    }
+
+    #[test]
+    fn search_text_limit_counts_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.py"), "hit\nhit\nhit\n").unwrap();
+        fs::write(dir.path().join("b.py"), "hit\nhit\n").unwrap();
+        let ws = Workspace::new(dir.path()).unwrap();
+        assert_eq!(
+            ws.search_text("hit", false, false, None, 4).unwrap(),
+            "a.py:1: hit\na.py:2: hit\na.py:3: hit\nb.py:1: hit\n… 1 more matching lines\n"
+        );
+        assert_eq!(
+            ws.search_text("hit", false, false, None, 0).unwrap(),
+            "… 5 more matching lines\n"
         );
     }
 
@@ -1222,7 +1297,7 @@ mod tests {
         assert!(ws.search("load", None, 10).ends_with(note));
         let refs = ws.find_references("load", None, false, 10).unwrap();
         assert!(
-            refs.starts_with("no references") && refs.ends_with(note),
+            refs.starts_with("no references") && refs.contains(note),
             "{refs}"
         );
         assert!(

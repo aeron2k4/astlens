@@ -166,6 +166,7 @@ fn bench_corpus(name: &str, root: &Path) -> CorpusReport {
     };
     let text_opts = TextOptions {
         max_files: MAX_FILES,
+        ..Default::default()
     };
     let (mut refs_times, mut text_times) = (Vec::new(), Vec::new());
     let (mut refs_lines, mut word_lines) = (0, 0);
@@ -179,7 +180,7 @@ fn bench_corpus(name: &str, root: &Path) -> CorpusReport {
 
         let re = Regex::new(&format!(r"\b{q}\b")).expect("word regex");
         let start = Instant::now();
-        word_lines += text::search_text(root, root, &cache, &re, &text_opts).len();
+        word_lines += text::search_text(root, root, &cache, &re, &text_opts).total;
         text_times.push(ms(start.elapsed()));
     }
     let re = Regex::new(TEXT_REGEX).expect("text regex");
