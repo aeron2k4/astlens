@@ -165,6 +165,9 @@ pub fn install(enforce: bool) -> Result<()> {
             paths.memory.display()
         ));
         add_memory(&paths.memory)?;
+    } else {
+        log("Removing any hook and CLAUDE.md block from an earlier install");
+        remove_enforcement(&paths)?;
     }
     log("Done. Restart Claude Code, then check with: claude mcp list");
     Ok(())
@@ -346,6 +349,16 @@ fn strip_block_in_file(path: &Path, begin: &str, end: &str) -> Result<()> {
 
 /// Everything uninstall removes except the MCP registration and the binary.
 fn remove_files(paths: &Paths) -> Result<()> {
+    remove_enforcement(paths)?;
+    for rc in &paths.rc_files {
+        strip_block_in_file(rc, RC_BEGIN, RC_END)?;
+    }
+    Ok(())
+}
+
+/// What `--install` adds and `--install --no-enforce` does not: the hook, its
+/// entry in the settings and the CLAUDE.md block.
+fn remove_enforcement(paths: &Paths) -> Result<()> {
     if let Some(mut settings) = read_settings(&paths.settings)? {
         let before = settings.clone();
         strip_hook(&mut settings);
@@ -359,11 +372,7 @@ fn remove_files(paths: &Paths) -> Result<()> {
         }
         _ => {}
     }
-    strip_block_in_file(&paths.memory, MEMORY_BEGIN, MEMORY_END)?;
-    for rc in &paths.rc_files {
-        strip_block_in_file(rc, RC_BEGIN, RC_END)?;
-    }
-    Ok(())
+    strip_block_in_file(&paths.memory, MEMORY_BEGIN, MEMORY_END)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -520,6 +529,27 @@ mod tests {
             fs::read_to_string(&paths.rc_files[0]).unwrap(),
             "before\nafter\n"
         );
+    }
+
+    #[test]
+    fn no_enforce_removes_the_hook_but_keeps_the_path_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        fs::create_dir_all(paths.settings.parent().unwrap()).unwrap();
+        fs::write(&paths.settings, "{}").unwrap();
+        let rc = format!("{RC_BEGIN}\nexport PATH=x\n{RC_END}\n");
+        fs::write(&paths.rc_files[0], &rc).unwrap();
+        write_hook(&paths.hook).unwrap();
+        add_hook_to_settings(&paths).unwrap();
+        add_memory(&paths.memory).unwrap();
+
+        remove_enforcement(&paths).unwrap();
+        assert!(!paths.hook.exists());
+        let settings = read_settings(&paths.settings).unwrap().unwrap();
+        assert!(commands(&settings).is_empty());
+        let memory = fs::read_to_string(&paths.memory).unwrap();
+        assert!(!memory.contains(MEMORY_BEGIN));
+        assert_eq!(fs::read_to_string(&paths.rc_files[0]).unwrap(), rc);
     }
 
     #[test]
