@@ -51,13 +51,21 @@ pub struct FileStatus {
     pub renamed_from: Option<String>,
 }
 
-/// Working-tree status via `git status --porcelain`. Errors when `root` is
-/// not inside a git repository or git is unavailable.
+/// Working-tree status of the files under `root`, with paths relative to it,
+/// via `git status --porcelain`. Errors when `root` is not inside a git
+/// repository or git is unavailable.
 pub fn status(root: &Path) -> Result<Vec<FileStatus>> {
     let output = Command::new("git")
         .arg("-C")
         .arg(root)
-        .args(["status", "--porcelain=v1", "-z", "--untracked-files=all"])
+        .args([
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+            "--",
+            ".",
+        ])
         .output()
         .context("failed to run git")?;
     if !output.status.success() {
@@ -66,7 +74,54 @@ pub fn status(root: &Path) -> Result<Vec<FileStatus>> {
             String::from_utf8_lossy(&output.stderr).trim()
         );
     }
-    Ok(parse_porcelain(&String::from_utf8_lossy(&output.stdout)))
+    // Porcelain paths start at the top of the repository, wherever git runs.
+    let prefix = repo_prefix(root)?;
+    let mut entries = parse_porcelain(&String::from_utf8_lossy(&output.stdout));
+    for entry in &mut entries {
+        entry.path = strip_repo_prefix(&entry.path, &prefix);
+        entry.renamed_from = entry
+            .renamed_from
+            .as_deref()
+            .map(|from| strip_repo_prefix(from, &prefix));
+    }
+    Ok(entries)
+}
+
+/// The path of `root` inside its repository: empty at the top, else `sub/dir/`.
+fn repo_prefix(root: &Path) -> Result<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["rev-parse", "--show-prefix"])
+        .output()
+        .context("failed to run git")?;
+    if !output.status.success() {
+        bail!(
+            "git rev-parse failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .trim_end_matches(['\n', '\r'])
+        .to_string())
+}
+
+fn strip_repo_prefix(path: &str, prefix: &str) -> String {
+    path.strip_prefix(prefix).unwrap_or(path).to_string()
+}
+
+/// Whether `root` is in a repository whose current branch has no commit yet.
+fn lacks_commits(root: &Path) -> bool {
+    let succeeds = |args: &[&str]| {
+        Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .output()
+            .is_ok_and(|output| output.status.success())
+    };
+    succeeds(&["rev-parse", "--git-dir"])
+        && !succeeds(&["rev-parse", "--verify", "--quiet", "HEAD"])
 }
 
 fn parse_porcelain(raw: &str) -> Vec<FileStatus> {
@@ -131,6 +186,9 @@ pub fn diff(root: &Path, base: &str, staged: bool) -> Result<Vec<FileDiff>> {
         .output()
         .context("failed to run git")?;
     if !output.status.success() {
+        if lacks_commits(root) {
+            bail!("the repository has no commits yet, so there is nothing to compare {base} with");
+        }
         bail!(
             "git diff failed: {}",
             String::from_utf8_lossy(&output.stderr).trim()
@@ -142,8 +200,13 @@ pub fn diff(root: &Path, base: &str, staged: bool) -> Result<Vec<FileDiff>> {
 fn parse_diff(raw: &str) -> Vec<FileDiff> {
     let mut files: Vec<FileDiff> = Vec::new();
     let mut old_path = None;
+    // Lines left in the current hunk. They are file content, so `--- x` among
+    // them is a removed `-- x`, not a header.
+    let mut content_lines = 0;
     for line in raw.lines() {
-        if line.starts_with("diff --git ") {
+        if content_lines > 0 && line.starts_with(['-', '+']) {
+            content_lines -= 1;
+        } else if line.starts_with("diff --git ") {
             old_path = None;
         } else if let Some(p) = line.strip_prefix("--- ") {
             old_path = header_path(p, "a/");
@@ -173,6 +236,7 @@ fn parse_diff(raw: &str) -> Vec<FileDiff> {
             if let (Some(old), Some(new)) = (range(parts.next(), '-'), range(parts.next(), '+')) {
                 file.old.push(old);
                 file.new.push(new);
+                content_lines = old.1 + new.1;
             }
         }
     }
@@ -318,6 +382,74 @@ mod tests {
         let files = parse_diff(raw);
         assert_eq!(files[0].path, "my file.rs");
         assert!(files[0].deleted);
+    }
+
+    #[test]
+    fn diff_content_that_looks_like_a_header_stays_content() {
+        let raw = "diff --git a/q.sql b/q.sql\n\
+                   --- a/q.sql\n\
+                   +++ b/q.sql\n\
+                   @@ -2,2 +2,2 @@\n\
+                   --- a/comment\n\
+                   --- second\n\
+                   +++ b/comment\n\
+                   +++ second\n\
+                   @@ -9 +9 @@\n\
+                   -x\n\
+                   \\ No newline at end of file\n\
+                   +y\n\
+                   diff --git a/z.sql b/z.sql\n\
+                   --- a/z.sql\n\
+                   +++ b/z.sql\n\
+                   @@ -1 +1 @@\n\
+                   -a\n\
+                   +b\n";
+        let files = parse_diff(raw);
+        let paths: Vec<_> = files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, ["q.sql", "z.sql"]);
+        assert_eq!(files[0].old, [(2, 2), (9, 1)]);
+        assert_eq!(files[0].new, [(2, 2), (9, 1)]);
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "git {args:?}: {output:?}");
+    }
+
+    #[test]
+    fn status_in_a_subdirectory_is_scoped_and_relative() {
+        let dir = tempfile::tempdir().unwrap();
+        let top = dir.path();
+        git(top, &["init", "-q"]);
+        fs::create_dir_all(top.join("sub/in")).unwrap();
+        fs::write(top.join("outside.rs"), "").unwrap();
+        fs::write(top.join("sub/in/a.rs"), "").unwrap();
+        fs::write(top.join("sub/old.rs"), "x\n").unwrap();
+        git(top, &["add", "sub/old.rs"]);
+        git(top, &["commit", "-qm", "x"]);
+        git(top, &["mv", "sub/old.rs", "sub/new.rs"]);
+
+        let sub = status(&top.join("sub")).unwrap();
+        let paths: Vec<_> = sub.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(paths, ["new.rs", "in/a.rs"]);
+        assert_eq!(sub[0].renamed_from.as_deref(), Some("old.rs"));
+
+        let all = status(top).unwrap();
+        assert!(all.iter().any(|e| e.path == "outside.rs"));
+    }
+
+    #[test]
+    fn diff_without_commits_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        git(dir.path(), &["init", "-q"]);
+        let err = diff(dir.path(), "HEAD", false).unwrap_err().to_string();
+        assert!(err.contains("no commits yet"), "{err}");
     }
 
     #[test]
