@@ -28,7 +28,12 @@ done < <(jq -j '[.tool_name, .cwd] + (.tool_input | [.command, .file_path, .limi
   | map(((. // "") | tostring) + "\u0000") | add')
 [ -n "$cwd" ] || cwd=$PWD
 
-EXTS='rs|py|pyi|js|jsx|mjs|cjs|ts|mts|cts|tsx|go|c|h|cc|cpp|cxx|hh|hpp|hxx|java|cs'
+# Same list as Lang::from_path, which ignores case: rs becomes [rR][sS]. Not
+# nocasematch, which would also make GREP count as grep.
+EXTS='rs|py|pyi|js|jsx|mjs|cjs|ts|mts|cts|tsx|go|c|h|cc|cpp|cxx|c\+\+|hh|hpp|hxx|h\+\+|ipp|tpp|java|cs'
+for pair in aA cC gG hH iI jJ mM oO pP rR sS tT vV xX yY; do
+  EXTS=${EXTS//${pair:0:1}/[$pair]}
+done
 CODE_EXT="\\.($EXTS)\$"
 # A glob or extension list naming a source extension: *.rs, *.{ts,tsx}, rs,py
 CODE_GLOB="(^|[.,{])($EXTS)([,}]|\$)"

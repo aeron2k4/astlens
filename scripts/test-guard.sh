@@ -9,6 +9,12 @@ echo 'fn main() {}' >"$WS/src/main.rs"
 echo 'fn a() {}' >"$WS/src/a.rs"
 echo 'fn b() {}' >"$WS/src/tiếng việt.rs"
 echo '# hi' >"$WS/README.md"
+echo '# hi' >"$WS/NOTES.MD"
+echo 'fn up() {}' >"$WS/src/UP.RS"
+echo 'int x;' >"$WS/src/x.c++"
+echo 'int y;' >"$WS/src/y.H++"
+echo 'int z;' >"$WS/src/z.ipp"
+echo 'int t;' >"$WS/src/t.tpp"
 fail=0
 
 # verdict <tool> <json tool_input>
@@ -33,6 +39,23 @@ bash_cmd() { expect "$1" Bash "$(jq -n --arg c "$2" '{command: $c}')" "$2"; }
 expect deny Read "{\"file_path\": \"$WS/src/main.rs\"}" 'Read whole file'
 expect allow Read "{\"file_path\": \"$WS/src/main.rs\", \"limit\": 50}" 'Read limited'
 expect allow Read '{"file_path": "/etc/x.rs"}' 'Read outside workspace'
+expect deny Read "{\"file_path\": \"$WS/src/UP.RS\"}" 'Read upper-case extension'
+expect deny Read "{\"file_path\": \"$WS/src/x.c++\"}" 'Read .c++'
+expect deny Read "{\"file_path\": \"$WS/src/z.ipp\"}" 'Read .ipp'
+expect allow Read "{\"file_path\": \"$WS/NOTES.MD\"}" 'Read upper-case non-code'
+expect deny Grep '{"pattern": "x", "glob": "*.RS"}' 'Grep upper-case glob'
+expect deny Grep '{"pattern": "x", "glob": "*.c++"}' 'Grep .c++ glob'
+expect allow Grep '{"pattern": "x", "glob": "*.MD"}' 'Grep upper-case non-code glob'
+bash_cmd deny 'cat src/UP.RS'
+bash_cmd deny 'cat src/x.c++'
+bash_cmd deny 'head -n 5000 src/y.H++'
+bash_cmd deny 'sed -n 1,5000p src/t.tpp'
+bash_cmd allow 'head src/y.H++'
+bash_cmd allow 'head src/main.rs'
+bash_cmd deny 'grep foo src/UP.RS'
+bash_cmd deny 'grep --include=*.c++ -r foo .'
+bash_cmd allow 'cat NOTES.MD'
+bash_cmd allow 'cat src'
 
 while IFS= read -r c; do [ -n "$c" ] && bash_cmd deny "$c"; done <<'CASES'
 grep -rn foo src
