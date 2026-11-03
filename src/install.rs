@@ -13,6 +13,8 @@ use std::process::{Command, Output, Stdio};
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
 
+use crate::atomic::write_atomic;
+
 const SERVER: &str = "astlens";
 const GUARD: &str = include_str!("../scripts/astlens-guard.sh");
 const GUARD_NAME: &str = "astlens-guard.sh";
@@ -130,7 +132,6 @@ pub fn install(enforce: bool) -> Result<()> {
     log(format_args!(
         "Registering MCP server '{SERVER}' (user scope)"
     ));
-    let _ = claude(&["mcp", "remove", "--scope", "user", SERVER]);
     // alwaysLoad keeps the tools in the model's manifest; without it Claude Code
     // defers them behind ToolSearch and the model falls back to Read/Grep.
     let config = json!({
@@ -139,21 +140,7 @@ pub fn install(enforce: bool) -> Result<()> {
         "args": ["--serve"],
         "alwaysLoad": true,
     });
-    let output = claude(&[
-        "mcp",
-        "add-json",
-        "--scope",
-        "user",
-        SERVER,
-        &config.to_string(),
-    ])
-    .context("cannot run 'claude mcp add-json'")?;
-    if !output.status.success() {
-        bail!(
-            "'claude mcp add-json' failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
+    register(&config.to_string(), claude)?;
 
     if enforce {
         log(format_args!("Writing hook {}", paths.hook.display()));
@@ -173,12 +160,44 @@ pub fn install(enforce: bool) -> Result<()> {
     Ok(())
 }
 
+/// Register the server through `run`, which stands for the `claude` CLI. An
+/// earlier registration is the usual reason `add-json` fails, so it is removed
+/// only then: any other failure leaves a working registration in place.
+fn register(config: &str, mut run: impl FnMut(&[&str]) -> io::Result<Output>) -> Result<()> {
+    let add = ["mcp", "add-json", "--scope", "user", SERVER, config];
+    let remove = ["mcp", "remove", "--scope", "user", SERVER];
+    let stderr = |output: &Output| String::from_utf8_lossy(&output.stderr).trim().to_string();
+
+    let first = run(&add).context("cannot run 'claude mcp add-json'")?;
+    if first.status.success() {
+        return Ok(());
+    }
+    let removed = run(&remove).context("cannot run 'claude mcp remove'")?;
+    if !removed.status.success() {
+        bail!("'claude mcp add-json' failed: {}", stderr(&first));
+    }
+    let lost = "the earlier registration is already removed; fix this and run --install again";
+    let second = run(&add).with_context(|| format!("cannot run 'claude mcp add-json'; {lost}"))?;
+    if !second.status.success() {
+        bail!("'claude mcp add-json' failed: {}; {lost}", stderr(&second));
+    }
+    Ok(())
+}
+
 pub fn uninstall() -> Result<()> {
     let paths = Paths::from_env()?;
     log("Removing MCP server registration");
-    if let Err(err) = claude(&["mcp", "remove", "--scope", "user", SERVER]) {
+    let failure = match claude(&["mcp", "remove", "--scope", "user", SERVER]) {
+        Ok(output) if output.status.success() => None,
+        Ok(output) => Some(format!(
+            "'claude mcp remove' failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )),
+        Err(err) => Some(format!("Could not run 'claude' ({err})")),
+    };
+    if let Some(failure) = failure {
         log(format_args!(
-            "Could not run 'claude' ({err}); remove it later with: claude mcp remove --scope user {SERVER}"
+            "{failure}; if it is still listed, remove it later with: claude mcp remove --scope user {SERVER}"
         ));
     }
     log("Removing hook, CLAUDE.md block and PATH entry");
@@ -223,7 +242,7 @@ fn read_settings(path: &Path) -> Result<Option<Value>> {
 fn write_settings(path: &Path, settings: &Value) -> Result<()> {
     let mut text = serde_json::to_string_pretty(settings)?;
     text.push('\n');
-    fs::write(path, text).with_context(|| format!("cannot write {}", path.display()))
+    write_atomic(path, &text).with_context(|| format!("cannot write {}", path.display()))
 }
 
 fn add_hook_to_settings(paths: &Paths) -> Result<()> {
@@ -310,7 +329,7 @@ fn add_memory(path: &Path) -> Result<()> {
         text.push('\n');
     }
     text.push_str(&format!("{MEMORY_BEGIN}\n{MEMORY_TEXT}{MEMORY_END}\n"));
-    fs::write(path, text).with_context(|| format!("cannot write {}", path.display()))
+    write_atomic(path, &text).with_context(|| format!("cannot write {}", path.display()))
 }
 
 /// Remove `begin`..`end` lines. A `begin` with no `end` after it stays, so a
@@ -342,7 +361,8 @@ fn strip_block_in_file(path: &Path, begin: &str, end: &str) -> Result<()> {
     };
     let stripped = strip_block(&text, begin, end);
     if stripped != text {
-        fs::write(path, stripped).with_context(|| format!("cannot write {}", path.display()))?;
+        write_atomic(path, &stripped)
+            .with_context(|| format!("cannot write {}", path.display()))?;
     }
     Ok(())
 }
@@ -436,6 +456,62 @@ mod tests {
             .flat_map(|entry| entry["hooks"].as_array().unwrap())
             .map(|hook| hook["command"].as_str().unwrap().to_string())
             .collect()
+    }
+
+    /// Answer `register`'s commands with the given exit codes, recording them.
+    #[cfg(unix)]
+    fn run_register(codes: &[i32]) -> (Result<()>, Vec<String>) {
+        use std::os::unix::process::ExitStatusExt as _;
+
+        let mut codes = codes.iter();
+        let mut seen = Vec::new();
+        let result = register("{}", |args| {
+            seen.push(args[1].to_string());
+            let code = *codes.next().expect("no more commands expected");
+            Ok(Output {
+                status: std::process::ExitStatus::from_raw(code << 8),
+                stdout: Vec::new(),
+                stderr: format!("error {}", seen.len()).into_bytes(),
+            })
+        });
+        (result, seen)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn register_touches_nothing_else_when_the_first_add_works() {
+        let (result, seen) = run_register(&[0]);
+        result.unwrap();
+        assert_eq!(seen, ["add-json"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn register_replaces_an_earlier_registration() {
+        let (result, seen) = run_register(&[1, 0, 0]);
+        result.unwrap();
+        assert_eq!(seen, ["add-json", "remove", "add-json"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn register_reports_the_first_error_when_nothing_was_removed() {
+        let (result, seen) = run_register(&[1, 1]);
+        assert_eq!(seen, ["add-json", "remove"]);
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "'claude mcp add-json' failed: error 1"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn register_says_so_when_the_removed_registration_is_lost() {
+        let (result, seen) = run_register(&[1, 0, 1]);
+        assert_eq!(seen, ["add-json", "remove", "add-json"]);
+        let message = result.unwrap_err().to_string();
+        assert!(message.contains("error 3"), "{message}");
+        assert!(message.contains("run --install again"), "{message}");
     }
 
     #[test]

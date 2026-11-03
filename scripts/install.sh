@@ -132,6 +132,7 @@ if [ "$source_build" = 1 ]; then
   fi
 else
   need curl
+  need sha256sum
   if [ "$version" = latest ]; then
     base="https://github.com/$REPO/releases/latest/download"
   else

@@ -17,6 +17,7 @@ use serde::Deserialize;
 
 use crate::ast::parser::{self, ParsedFile, Symbol, SymbolKind, line_number, symbol_start};
 use crate::ast::pruner::{self, PruneOptions};
+use crate::atomic::write_atomic;
 use crate::git;
 use crate::index::cache::{ParseCache, PersistentStore};
 use crate::index::changes::{self, Change, DiffSpec};
@@ -697,42 +698,6 @@ fn strip_line_break(text: &str) -> Option<&str> {
 
 fn line_break_len(text: &str) -> usize {
     if text.ends_with("\r\n") { 2 } else { 1 }
-}
-
-/// Replace `path` with `contents` through a temporary file in the same
-/// directory and a rename, so an interrupted write never leaves it half
-/// written. The original permissions are kept, and a read-only file is refused
-/// since a rename would replace it regardless.
-fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
-    use std::io::Write as _;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-
-    let dir = path.parent().unwrap_or(Path::new("."));
-    let name = path.file_name().unwrap_or_default().to_string_lossy();
-    let tmp = dir.join(format!(
-        ".{name}.astlens-{}-{}.tmp",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
-    let permissions = std::fs::metadata(path)?.permissions();
-    if permissions.readonly() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "the file is read-only",
-        ));
-    }
-    let result = (|| {
-        let mut file = std::fs::File::create_new(&tmp)?;
-        file.write_all(contents.as_bytes())?;
-        file.sync_all()?;
-        std::fs::set_permissions(&tmp, permissions)?;
-        std::fs::rename(&tmp, path)
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
-    result
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
