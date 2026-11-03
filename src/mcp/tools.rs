@@ -242,11 +242,15 @@ impl Workspace {
             new_source.trim_end_matches(['\n', '\r']),
             line_ending(&source),
         );
-        let updated = format!(
-            "{}{replacement}{}",
-            &source[..start],
-            &source[sym.end_byte..]
-        );
+        let updated = if replacement.is_empty() {
+            without_span(&source, start, sym.end_byte)
+        } else {
+            format!(
+                "{}{replacement}{}",
+                &source[..start],
+                &source[sym.end_byte..]
+            )
+        };
         self.write_checked(&path, &parsed, &updated, || {
             format!("the new source of {}", sym.qualified_name())
         })?;
@@ -356,6 +360,9 @@ impl Workspace {
 
     /// Read and parse a file from disk, bypassing the cache, before a write.
     fn read_fresh(&self, path: &Path) -> Result<(String, ParsedFile)> {
+        if !path.is_file() {
+            bail!("{} is not a regular file", self.display(path));
+        }
         let source = std::fs::read_to_string(path)
             .with_context(|| format!("cannot read {}", self.display(path)))?;
         let parsed = parser::parse_path(path, &source)?;
@@ -659,9 +666,43 @@ fn with_line_ending(text: &str, eol: &str) -> String {
     }
 }
 
+/// `source` without the bytes `start..end`. When they were all that was on
+/// their lines, the line break goes too, and so does one blank line if that
+/// would leave blank lines on both sides or at the end of the file.
+fn without_span(source: &str, start: usize, end: usize) -> String {
+    let before = &source[..start];
+    let mut after = &source[end..];
+    if before.is_empty() || before.ends_with('\n') {
+        if let Some(rest) = strip_line_break(after) {
+            after = rest;
+        }
+        let blank_before =
+            before.is_empty() || before.ends_with("\n\n") || before.ends_with("\n\r\n");
+        if blank_before && (after.is_empty() || strip_line_break(after).is_some()) {
+            return match (strip_line_break(after), before.is_empty()) {
+                (Some(rest), _) => format!("{before}{rest}"),
+                // Nothing follows, so the blank line before is the one to drop.
+                (None, false) => before[..before.len() - line_break_len(before)].to_string(),
+                (None, true) => String::new(),
+            };
+        }
+    }
+    format!("{before}{after}")
+}
+
+fn strip_line_break(text: &str) -> Option<&str> {
+    text.strip_prefix("\r\n")
+        .or_else(|| text.strip_prefix('\n'))
+}
+
+fn line_break_len(text: &str) -> usize {
+    if text.ends_with("\r\n") { 2 } else { 1 }
+}
+
 /// Replace `path` with `contents` through a temporary file in the same
 /// directory and a rename, so an interrupted write never leaves it half
-/// written. The original permissions are kept.
+/// written. The original permissions are kept, and a read-only file is refused
+/// since a rename would replace it regardless.
 fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
     use std::io::Write as _;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -675,6 +716,12 @@ fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
     let permissions = std::fs::metadata(path)?.permissions();
+    if permissions.readonly() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "the file is read-only",
+        ));
+    }
     let result = (|| {
         let mut file = std::fs::File::create_new(&tmp)?;
         file.write_all(contents.as_bytes())?;
@@ -1191,7 +1238,7 @@ mod tests {
         ws.replace_symbol("src/lib.rs", "load", None, "").unwrap();
         assert_eq!(
             fs::read_to_string(&file).unwrap(),
-            "pub struct Cfg;\n\nimpl Cfg {\n\n}\n"
+            "pub struct Cfg;\n\nimpl Cfg {\n}\n"
         );
     }
 
@@ -1549,6 +1596,68 @@ mod tests {
             fs::read_to_string(&file).unwrap(),
             "fn a() {} // note\n\nfn n() {}\nfn b() {}\n"
         );
+    }
+
+    #[test]
+    fn deleting_a_symbol_leaves_no_blank_lines() {
+        let cases = [
+            (
+                "fn a() {}\n\nfn b() {}\n\nfn c() {}\n",
+                "b",
+                "fn a() {}\n\nfn c() {}\n",
+            ),
+            ("fn a() {}\n\nfn b() {}\n", "b", "fn a() {}\n"),
+            ("fn a() {}\n\nfn b() {}\n", "a", "fn b() {}\n"),
+            (
+                "fn a() {}\nfn b() {}\nfn c() {}\n",
+                "b",
+                "fn a() {}\nfn c() {}\n",
+            ),
+            (
+                "fn a() {}\r\n\r\nfn b() {}\r\n\r\nfn c() {}\r\n",
+                "b",
+                "fn a() {}\r\n\r\nfn c() {}\r\n",
+            ),
+            ("fn a() {}\n", "a", ""),
+            ("fn a() {} fn b() {}\n", "b", "fn a() {} \n"),
+        ];
+        let (dir, ws) = workspace();
+        let file = dir.path().join("src/del.rs");
+        for (source, name, expected) in cases {
+            fs::write(&file, source).unwrap();
+            ws.replace_symbol("src/del.rs", name, None, "").unwrap();
+            assert_eq!(fs::read_to_string(&file).unwrap(), expected, "{source:?}");
+        }
+    }
+
+    #[test]
+    fn read_only_files_are_not_overwritten() {
+        let (dir, ws) = workspace();
+        let file = dir.path().join("src/ro.rs");
+        fs::write(&file, "fn a() {}\n").unwrap();
+        let mut permissions = fs::metadata(&file).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&file, permissions).unwrap();
+        let err = ws
+            .replace_symbol("src/ro.rs", "a", None, "fn a() { 1; }\n")
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("read-only"), "{err:#}");
+        assert_eq!(fs::read_to_string(&file).unwrap(), "fn a() {}\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fifos_are_refused_without_blocking() {
+        let (dir, ws) = workspace();
+        let status = std::process::Command::new("mkfifo")
+            .arg(dir.path().join("src/pipe.rs"))
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let err = ws.outline("src/pipe.rs", None).unwrap_err();
+        assert!(err.to_string().contains("not a regular file"), "{err}");
+        let err = ws.replace_symbol("src/pipe.rs", "a", None, "").unwrap_err();
+        assert!(err.to_string().contains("not a regular file"), "{err}");
     }
 
     #[test]

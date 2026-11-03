@@ -40,6 +40,8 @@ pub enum CacheError {
         path: PathBuf,
         source: std::io::Error,
     },
+    #[error("{0} is not a regular file")]
+    NotAFile(PathBuf),
     #[error("{path} is {len} bytes, above the {max} byte limit")]
     TooLarge { path: PathBuf, len: u64, max: u64 },
     #[error("{0} is not valid UTF-8")]
@@ -389,6 +391,10 @@ impl ParseCache {
         let meta = std::fs::metadata(path).map_err(io_err)?;
         let len = meta.len();
         let mtime = meta.modified().map_err(io_err)?;
+        // Reading a FIFO would block until something writes to it.
+        if !meta.is_file() {
+            return Err(CacheError::NotAFile(path.to_path_buf()));
+        }
 
         if let Ok(entries) = self.entries.read()
             && let Some(entry) = entries.get(path)
