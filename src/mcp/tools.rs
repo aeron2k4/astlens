@@ -109,13 +109,18 @@ impl Workspace {
         let file = self.cache.get(&path)?;
         let parsed = &file.parsed;
         let mut out = format!(
-            "{} ({}, {} lines, {} symbols{})\n",
+            "{} ({}, {} lines, {} symbols{}{})\n",
             self.display(&path),
             parsed.lang.name(),
             file.source.lines().count(),
             parsed.symbols.len(),
             if parsed.has_errors {
                 ", has syntax errors"
+            } else {
+                ""
+            },
+            if parsed.incomplete {
+                ", symbol search timed out, list incomplete"
             } else {
                 ""
             }

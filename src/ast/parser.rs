@@ -5,12 +5,15 @@
 //! fails on syntactically broken input: tree-sitter recovers with `ERROR`
 //! nodes, and we report `has_errors` instead of bailing out.
 
+use std::cell::Cell;
+use std::ops::ControlFlow;
 use std::path::Path;
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use streaming_iterator::StreamingIterator;
-use tree_sitter::{Node, Parser, Query, QueryCursor};
+use tree_sitter::{Node, Parser, Query, QueryCursor, QueryCursorOptions};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ParseError {
@@ -361,6 +364,9 @@ pub struct ParsedFile {
     pub symbols: Vec<Symbol>,
     /// True when tree-sitter had to recover from syntax errors.
     pub has_errors: bool,
+    /// True when the symbol query ran out of time, so `symbols` holds only
+    /// those found before that.
+    pub incomplete: bool,
     /// Start bytes of every identifier token, ascending. Kept so reference
     /// search needs no re-parse; stored as deltas to keep the store compact.
     #[serde(with = "deltas")]
@@ -398,16 +404,22 @@ pub fn parse_path(path: &Path, source: &str) -> Result<ParsedFile, ParseError> {
     parse_source(lang, source)
 }
 
+/// Time allowed for the symbol query on one file. Ordinary files need far less,
+/// even a 2 MB data table about 6 s, but the query is quadratic on some broken
+/// input: 2 MB of `[` would take most of an hour.
+const QUERY_BUDGET: Duration = Duration::from_secs(10);
+
 pub fn parse_source(lang: Lang, source: &str) -> Result<ParsedFile, ParseError> {
     let mut parser = Parser::new();
     parser.set_language(&lang.grammar())?;
     let tree = parser.parse(source, None).ok_or(ParseError::NoTree)?;
     let root = tree.root_node();
-    let symbols = extract_symbols(lang, root, source)?;
+    let (symbols, incomplete) = extract_symbols(lang, root, source, QUERY_BUDGET)?;
     Ok(ParsedFile {
         lang,
         symbols,
         has_errors: root.has_error(),
+        incomplete,
         idents: collect_idents(root),
     })
 }
@@ -491,7 +503,13 @@ pub fn identifier_occurrences(parsed: &ParsedFile, source: &str, name: &str) -> 
     out
 }
 
-fn extract_symbols(lang: Lang, root: Node<'_>, source: &str) -> Result<Vec<Symbol>, ParseError> {
+/// Symbols under `root`, and whether `budget` ran out before the query ended.
+fn extract_symbols(
+    lang: Lang,
+    root: Node<'_>,
+    source: &str,
+    budget: Duration,
+) -> Result<(Vec<Symbol>, bool), ParseError> {
     let query = lang.query()?;
     let names = query.capture_names();
     let bytes = source.as_bytes();
@@ -499,8 +517,18 @@ fn extract_symbols(lang: Lang, root: Node<'_>, source: &str) -> Result<Vec<Symbo
     // (pattern_index, symbol) so overlapping patterns can be de-duplicated
     // in favour of the more specific (earlier) one.
     let mut found: Vec<(usize, Symbol)> = Vec::new();
+    let started = Instant::now();
+    let timed_out = Cell::new(false);
+    let mut check_budget = |_: &_| {
+        if started.elapsed() < budget {
+            return ControlFlow::Continue(());
+        }
+        timed_out.set(true);
+        ControlFlow::Break(())
+    };
+    let options = QueryCursorOptions::new().progress_callback(&mut check_budget);
     let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(query, root, bytes);
+    let mut matches = cursor.matches_with_options(query, root, bytes, options);
     while let Some(m) = matches.next() {
         let mut def: Option<(Node<'_>, SymbolKind)> = None;
         let mut name_node: Option<Node<'_>> = None;
@@ -566,7 +594,7 @@ fn extract_symbols(lang: Lang, root: Node<'_>, source: &str) -> Result<Vec<Symbo
         stack.push(symbols.len());
         symbols.push(sym);
     }
-    Ok(symbols)
+    Ok((symbols, timed_out.get()))
 }
 
 fn node_text<'s>(node: Node<'_>, source: &'s str) -> &'s str {
@@ -967,6 +995,26 @@ macro_rules! m { () => {} }
                 ("App::Handler".into(), SymbolKind::Type),
             ]
         );
+    }
+
+    #[test]
+    fn symbol_query_stops_when_out_of_time() {
+        let source = format!("function early() {{}}\n{}", "[".repeat(50_000));
+        let lang = Lang::JavaScript;
+        let mut parser = Parser::new();
+        parser.set_language(&lang.grammar()).unwrap();
+        let tree = parser.parse(&source, None).unwrap();
+
+        let budget = Duration::from_millis(50);
+        let started = Instant::now();
+        let (symbols, incomplete) =
+            extract_symbols(lang, tree.root_node(), &source, budget).unwrap();
+        assert!(incomplete);
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert_eq!(symbols[0].name, "early");
+
+        let parsed = parse_source(lang, "function f() {}\n").unwrap();
+        assert!(!parsed.incomplete);
     }
 
     #[test]
