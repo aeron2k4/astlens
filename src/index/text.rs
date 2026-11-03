@@ -1,6 +1,7 @@
 //! Regex search over workspace files, annotated with the enclosing symbol.
 
 use std::path::Path;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use regex::Regex;
@@ -13,7 +14,7 @@ use super::{
 use crate::ast::parser::Lang;
 
 /// Files larger than this are skipped (same bound as the parse cache).
-const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
+pub(super) const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 /// Bytes inspected for a NUL to detect binary files.
 const BINARY_SNIFF_BYTES: usize = 8 * 1024;
 
@@ -88,7 +89,10 @@ pub fn search_text(
 
         // One hit per line: the first match on it. No file can hold more than
         // `limit` of the hits kept overall, so the others need not be stored.
-        let mut kept: Vec<(usize, usize)> = Vec::new();
+        // Their text waits until the kept hits are known: one short line per
+        // hit over thousands of files adds up.
+        let path: Arc<str> = slash_path(rel).into();
+        let mut kept: Vec<(Arc<str>, usize, usize)> = Vec::new();
         let mut matched = 0;
         let mut last_line = 0;
         let mut line = 1;
@@ -100,43 +104,39 @@ pub fn search_text(
                 last_line = line;
                 matched += 1;
                 if kept.len() < opts.limit {
-                    kept.push((line, m.start()));
+                    kept.push((Arc::clone(&path), line, m.start()));
                 }
             }
         }
         total.fetch_add(matched, Ordering::Relaxed);
-
-        let path = slash_path(rel);
-        kept.into_iter()
-            .map(|(line, byte)| {
-                let hit = TextHit {
-                    path: path.clone(),
-                    line,
-                    text: line_excerpt(&source, byte),
-                    enclosing: None,
-                };
-                (hit, byte)
-            })
-            .collect()
+        kept
     });
     found.truncate(opts.limit);
 
-    // Symbols only for the hits returned, so the walk stays cheap.
+    // Text and symbols only for the hits returned, so the walk stays cheap.
+    let mut source = None;
     let mut parsed = None;
-    let mut parsed_path = None;
+    let mut current = None;
     let hits = found
         .into_iter()
-        .map(|(mut hit, byte)| {
-            if parsed_path.as_deref() != Some(hit.path.as_str()) {
-                let abs = root.join(&hit.path);
+        .filter_map(|(path, line, byte)| {
+            if current.as_ref() != Some(&path) {
+                let abs = root.join(&*path);
+                source = read_text(&abs).ok();
                 parsed = Lang::from_path(&abs).and_then(|_| cache.get(&abs).ok());
-                parsed_path = Some(hit.path.clone());
+                current = Some(Arc::clone(&path));
             }
-            hit.enclosing = parsed
-                .as_ref()
-                .and_then(|f| enclosing_symbol(&f.parsed.symbols, byte))
-                .map(|s| s.qualified_name());
-            hit
+            // Not valid here means the file changed since the search read it.
+            let text = source.as_deref().filter(|s| s.is_char_boundary(byte))?;
+            Some(TextHit {
+                path: path.to_string(),
+                line,
+                text: line_excerpt(text, byte),
+                enclosing: parsed
+                    .as_ref()
+                    .and_then(|f| enclosing_symbol(&f.parsed.symbols, byte))
+                    .map(|s| s.qualified_name()),
+            })
         })
         .collect();
     TextHits {
@@ -150,14 +150,17 @@ pub fn search_text(
 
 /// Why a file was left out of a search. Binary files are not worth reporting,
 /// so they count as `Other`, like files that cannot be read.
-enum Unread {
+pub(super) enum Unread {
     NotUtf8,
     Oversized,
     Other,
 }
 
-fn read_text(path: &Path) -> Result<String, Unread> {
+pub(super) fn read_text(path: &Path) -> Result<String, Unread> {
     let meta = std::fs::metadata(path).map_err(|_| Unread::Other)?;
+    if !meta.is_file() {
+        return Err(Unread::Other);
+    }
     if meta.len() > MAX_FILE_BYTES {
         return Err(Unread::Oversized);
     }

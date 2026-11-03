@@ -7,6 +7,7 @@ use std::path::Path;
 use anyhow::Result;
 use serde::Serialize;
 
+use super::text;
 use crate::ast::parser::{self, Lang, ParsedFile, SymbolKind};
 use crate::git;
 
@@ -105,11 +106,15 @@ fn file_changes(root: &Path, spec: DiffSpec<'_>, diff: &git::FileDiff) -> Result
     } else if spec.staged {
         git::show(root, "", &diff.path)?
     } else {
-        std::fs::read_to_string(root.join(&diff.path)).ok()
+        text::read_text(&root.join(&diff.path)).ok()
     };
     let (Some(old), Some(new)) = (old, new) else {
         return Ok(unparsed);
     };
+    // The same bound as every other tool: past it parsing costs too much.
+    if old.len().max(new.len()) as u64 > text::MAX_FILE_BYTES {
+        return Ok(unparsed);
+    }
     let (old_source, new_source) = (old, new);
     let (Ok(old), Ok(new)) = (
         parser::parse_path(path, &old_source),

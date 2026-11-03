@@ -1696,6 +1696,30 @@ mod tests {
     }
 
     #[test]
+    fn changed_symbols_does_not_parse_huge_files() {
+        let (dir, ws) = workspace();
+        let root = dir.path();
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(root)
+                .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+        };
+        fs::write(root.join("big.js"), "function a() {}\n").unwrap();
+        git(&["init", "-q"]);
+        git(&["add", "."]);
+        git(&["commit", "-qm", "x"]);
+        let big = format!("function a() {{}}\n{}", "// x\n".repeat(500_000));
+        fs::write(root.join("big.js"), big).unwrap();
+        let out = ws.changed_symbols("HEAD", false).unwrap();
+        assert!(out.contains("big.js (not parsed)"), "{out}");
+    }
+
+    #[test]
     fn changed_symbols_groups_a_diff_by_symbol() {
         let (dir, ws) = workspace();
         let git = |args: &[&str]| {
