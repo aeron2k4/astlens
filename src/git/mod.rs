@@ -146,9 +146,9 @@ fn parse_diff(raw: &str) -> Vec<FileDiff> {
         if line.starts_with("diff --git ") {
             old_path = None;
         } else if let Some(p) = line.strip_prefix("--- ") {
-            old_path = p.strip_prefix("a/").map(str::to_string);
+            old_path = header_path(p, "a/");
         } else if let Some(p) = line.strip_prefix("+++ ") {
-            let new_path = p.strip_prefix("b/").map(str::to_string);
+            let new_path = header_path(p, "b/");
             let deleted = new_path.is_none();
             let Some(path) = new_path.or_else(|| old_path.take()) else {
                 continue;
@@ -177,6 +177,13 @@ fn parse_diff(raw: &str) -> Vec<FileDiff> {
         }
     }
     files
+}
+
+/// The path in a `---` or `+++` line. Git ends the line with a tab when the
+/// path has a space; a path that itself holds a tab is quoted instead.
+fn header_path(text: &str, prefix: &str) -> Option<String> {
+    let path = text.strip_prefix(prefix)?;
+    Some(path.strip_suffix('\t').unwrap_or(path).to_string())
 }
 
 /// Contents of `path` (relative to `root`) at `rev`, or in the index when
@@ -292,6 +299,25 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn diff_paths_with_spaces_lose_the_trailing_tab() {
+        let raw = "diff --git a/my file.rs b/my file.rs\n\
+                   --- a/my file.rs\t\n\
+                   +++ b/my file.rs\t\n\
+                   @@ -1 +1 @@\n";
+        let files = parse_diff(raw);
+        assert_eq!(files[0].path, "my file.rs");
+        assert!(!files[0].added && !files[0].deleted);
+
+        let raw = "diff --git a/my file.rs b/my file.rs\n\
+                   --- a/my file.rs\t\n\
+                   +++ /dev/null\n\
+                   @@ -1 +0,0 @@\n";
+        let files = parse_diff(raw);
+        assert_eq!(files[0].path, "my file.rs");
+        assert!(files[0].deleted);
     }
 
     #[test]
