@@ -2,7 +2,8 @@ name: Release
 
 # Push a tag matching the version in Cargo.toml, e.g. `git tag -a v0.1.0 -m
 # "astlens 0.1.0" && git push origin v0.1.0`. To release a tag that
-# already exists, run this workflow by hand with that tag.
+# already exists, run this workflow by hand with that tag. The tag must be on
+# main.
 on:
   push:
     tags: ["v*"]
@@ -24,9 +25,16 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ env.TAG }}
+          fetch-depth: 0 # the history of main, for the check below
+      - name: Tag is on main
+        run: |
+          if ! git merge-base --is-ancestor "$TAG" origin/main; then
+            echo "::error::tag $TAG is not on main"
+            exit 1
+          fi
       - name: Tag matches Cargo.toml version
         run: |
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
@@ -41,11 +49,11 @@ jobs:
     needs: check
     runs-on: ubuntu-22.04 # older glibc, so the binary runs on more distros
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ env.TAG }}
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - run: cargo test --locked
       - run: scripts/test-guard.sh
       - run: cargo build --release --locked
@@ -53,7 +61,7 @@ jobs:
       # Ship the bare executable, named by OS and without the version, so
       # releases/latest/download/astlens-<os> is a stable URL.
       - run: cp target/release/astlens astlens-linux
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: linux
           path: astlens-linux
@@ -65,7 +73,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: linux
           path: dist
@@ -86,26 +94,40 @@ jobs:
   # release without the Windows binary.
   windows:
     needs: release
-    permissions:
-      contents: write
     runs-on: windows-latest
     steps:
-      # The token is only for the last step, not for the build.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ env.TAG }}
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - run: cargo build --release --locked
-      - name: Add binary and checksum to the release
+      - run: cp target/release/astlens.exe astlens-windows.exe
         shell: bash
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: windows
+          path: astlens-windows.exe
+          if-no-files-found: error
+
+  # Separate from the build, so that the write token never meets the build's
+  # third-party actions and build scripts.
+  windows-publish:
+    needs: windows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: windows
+      - name: Add binary and checksum to the release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           asset=astlens-windows.exe
-          cp target/release/astlens.exe "$asset"
           gh release upload "$TAG" "$asset" --clobber
 
           gh release download "$TAG" --pattern SHA256SUMS --clobber

@@ -8,6 +8,7 @@ updates:
     groups:
       cargo:
         update-types: [minor, patch]
+  # Actions are pinned by commit, with the version in a comment.
   - package-ecosystem: github-actions
     directory: /
     schedule:
