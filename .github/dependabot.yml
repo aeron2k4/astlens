@@ -11,6 +11,10 @@ updates:
   # Actions are pinned by commit, with the version in a comment.
   - package-ecosystem: github-actions
     directory: /
+    # Its versions are branches, which Dependabot does not tell apart: it moved
+    # the MSRV job's `# 1.90` pin to the commit of `stable`.
+    ignore:
+      - dependency-name: dtolnay/rust-toolchain
     schedule:
       interval: weekly
     groups:
