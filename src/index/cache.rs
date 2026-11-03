@@ -302,7 +302,6 @@ impl ParseCache {
         }
     }
 
-    /// Back this cache with a persistent store.
     /// Keep cached files within about `max_bytes` of memory, evicting the
     /// least recently used beyond that.
     pub fn with_max_bytes(mut self, max_bytes: usize) -> Self {
@@ -315,6 +314,7 @@ impl ParseCache {
         self.used_bytes.load(Ordering::Relaxed) as usize
     }
 
+    /// Back this cache with a persistent store.
     pub fn with_store(mut self, store: PersistentStore) -> Self {
         self.store = Some(store);
         self

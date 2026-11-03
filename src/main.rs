@@ -57,8 +57,6 @@ fn cache_dir() -> Option<PathBuf> {
     Some(base.join("astlens"))
 }
 
-/// Attach the persistent store when available; a broken or unwritable cache
-/// directory only costs re-parsing, so it is never fatal.
 /// Drop stored results of deleted files on a background thread, so the
 /// server answers `initialize` without waiting for the sweep.
 fn prune_in_background(store: PersistentStore, root: PathBuf) {
@@ -69,6 +67,8 @@ fn prune_in_background(store: PersistentStore, root: PathBuf) {
     });
 }
 
+/// Attach the persistent store when available; a broken or unwritable cache
+/// directory only costs re-parsing, so it is never fatal.
 fn with_persistence(workspace: Workspace) -> Workspace {
     let Some(dir) = cache_dir() else {
         tracing::info!("persistent cache disabled");
@@ -121,7 +121,7 @@ async fn serve(root: Option<PathBuf>) -> Result<()> {
         .ok()
         .and_then(|v| v.trim().parse::<usize>().ok())
     {
-        workspace = workspace.with_cache_bytes(mb << 20);
+        workspace = workspace.with_cache_bytes(mb.saturating_mul(1 << 20));
     }
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
