@@ -558,6 +558,7 @@ fn extract_symbols(
         if name.is_empty() {
             continue;
         }
+        let node = own_declarator(node, name_node);
         let body = find_body(node).map(|b| (b.start_byte(), b.end_byte()));
         found.push((
             m.pattern_index,
@@ -612,10 +613,30 @@ fn node_text<'s>(node: Node<'_>, source: &'s str) -> &'s str {
     source.get(node.byte_range()).unwrap_or("")
 }
 
+/// In `const a = () => 1, b = () => 2` the declaration holds several functions,
+/// so each one is only its declarator: as the whole declaration they would be
+/// one symbol, and replacing it would delete the others.
+fn own_declarator<'t>(node: Node<'t>, name: Node<'t>) -> Node<'t> {
+    let mut cursor = node.walk();
+    let declarators = node
+        .named_children(&mut cursor)
+        .filter(|c| c.kind() == "variable_declarator")
+        .count();
+    match name.parent() {
+        Some(declarator) if declarators > 1 => declarator,
+        _ => node,
+    }
+}
+
 /// Locate the block that holds a definition's implementation.
 fn find_body(node: Node<'_>) -> Option<Node<'_>> {
     if let Some(body) = node.child_by_field_name("body") {
         return Some(body);
+    }
+    if node.kind() == "variable_declarator" {
+        return node
+            .child_by_field_name("value")?
+            .child_by_field_name("body");
     }
     // `const f = () => {...}` keeps the body on the declarator's value.
     let mut cursor = node.walk();
@@ -798,6 +819,29 @@ fn attached_start(lang: Lang, source: &str, mut start: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn functions_sharing_a_declaration_are_separate_symbols() {
+        let source = "const a = () => { 1 }, n = 1, b = function () {};\nconst c = () => 3;\n";
+        for lang in [Lang::JavaScript, Lang::TypeScript] {
+            let parsed = parse_source(lang, source).unwrap();
+            let found: Vec<_> = parsed
+                .symbols
+                .iter()
+                .map(|s| (s.name.as_str(), &source[s.start_byte..s.end_byte]))
+                .collect();
+            assert_eq!(
+                found,
+                [
+                    ("a", "a = () => { 1 }"),
+                    ("b", "b = function () {}"),
+                    ("c", "const c = () => 3;"),
+                ]
+            );
+            let body = parsed.symbols[0].body.unwrap();
+            assert_eq!(&source[body.0..body.1], "{ 1 }");
+        }
+    }
 
     fn names(parsed: &ParsedFile) -> Vec<(String, SymbolKind)> {
         parsed
