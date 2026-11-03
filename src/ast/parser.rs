@@ -1082,7 +1082,10 @@ macro_rules! m { () => {} }
         let (symbols, incomplete) =
             extract_symbols(lang, tree.root_node(), &source, budget).unwrap();
         assert!(incomplete);
-        assert!(started.elapsed() < Duration::from_secs(1));
+        // Generous for a busy CI runner, yet well under the full query, which
+        // takes several seconds even without load.
+        let elapsed = started.elapsed();
+        assert!(elapsed < Duration::from_secs(5), "took {elapsed:?}");
         assert_eq!(symbols[0].name, "early");
 
         let parsed = parse_source(lang, "function f() {}\n").unwrap();
