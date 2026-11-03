@@ -70,7 +70,11 @@ where
             .collect();
         handles
             .into_iter()
-            .flat_map(|h| h.join().unwrap_or_default())
+            // A panic becomes a tool error, not hits missing without a word.
+            .flat_map(|h| {
+                h.join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+            })
             .collect()
     })
 }
@@ -271,6 +275,13 @@ mod tests {
         let hits = search_symbols(dir.path(), &cache, "PARSE", &opts);
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].name, "parse_all");
+    }
+
+    #[test]
+    #[should_panic(expected = "bad file")]
+    fn a_panic_in_a_worker_reaches_the_caller() {
+        let files = [PathBuf::from("a"), PathBuf::from("b")];
+        par_flat_map::<(), _>(&files, |_| panic!("bad file"));
     }
 
     #[test]
