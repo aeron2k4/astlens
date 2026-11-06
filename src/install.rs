@@ -260,11 +260,17 @@ fn install_opencode(paths: &Paths, enforce: bool) -> Result<()> {
     }
 
     let exe = current_exe()?;
+    setup_opencode(paths, &native_path(&exe), enforce)
+}
+
+/// Everything between locating the binary and the final message, so that tests
+/// can drive it with a fake home.
+fn setup_opencode(paths: &Paths, exe: &str, enforce: bool) -> Result<()> {
     log(format_args!(
         "Registering MCP server 'astlens' with OpenCode ({})",
         paths.opencode_config.display()
     ));
-    opencode::add_server(&paths.opencode_config, &native_path(&exe))?;
+    opencode::add_server(&paths.opencode_config, exe)?;
 
     if enforce {
         log(format_args!(
@@ -611,17 +617,18 @@ fn remove_binary(exe: &Path, cargo_bin: &Path) {
 mod tests {
     use super::*;
 
+    /// The global layout: OpenCode's config directory is `~/.config/opencode`.
     fn paths(dir: &Path) -> Paths {
+        let opencode = dir.join(".config/opencode");
+        let plugin = opencode.join("plugins/astlens-guard");
         Paths {
-            claude_hook: dir.join("claude/hooks").join(GUARD_NAME),
-            claude_settings: dir.join("claude/settings.json"),
-            claude_memory: dir.join("claude/CLAUDE.md"),
-            opencode_config: dir.join("opencode/opencode.json"),
-            opencode_memory: dir.join("opencode/AGENTS.md"),
-            opencode_plugin: dir
-                .join("opencode/plugins/astlens-guard")
-                .join(OPENCODE_PLUGIN_NAME),
-            opencode_guard: dir.join("opencode/plugins/astlens-guard").join(GUARD_NAME),
+            claude_hook: dir.join(".claude/hooks").join(GUARD_NAME),
+            claude_settings: dir.join(".claude/settings.json"),
+            claude_memory: dir.join(".claude/CLAUDE.md"),
+            opencode_config: opencode.join("opencode.json"),
+            opencode_memory: opencode.join("AGENTS.md"),
+            opencode_plugin: plugin.join(OPENCODE_PLUGIN_NAME),
+            opencode_guard: plugin.join(GUARD_NAME),
             rc_files: vec![dir.join(".bashrc"), dir.join("fish/config.fish")],
             cargo_bin: dir.join(".cargo/bin"),
         }
@@ -840,6 +847,44 @@ mod tests {
         assert_eq!(
             fs::read_to_string(&paths.opencode_memory).unwrap(),
             "mine\n"
+        );
+    }
+
+    #[test]
+    fn opencode_setup_writes_the_registration_guard_and_instructions() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        setup_opencode(&paths, "/bin/astlens", true).unwrap();
+
+        let config = fs::read_to_string(&paths.opencode_config).unwrap();
+        assert_eq!(
+            config,
+            "{\n  \"mcp\": {\n    \"servers\": {\n      \"astlens\": {\n        \"type\": \"local\",\n        \"command\": [\"/bin/astlens\", \"--serve\"],\n        \"codemode\": false\n      }\n    }\n  }\n}\n"
+        );
+        assert!(paths.opencode_plugin.exists());
+        assert!(paths.opencode_guard.exists());
+        assert!(
+            fs::read_to_string(&paths.opencode_memory)
+                .unwrap()
+                .contains(OPENCODE_MEMORY_TEXT.trim_end())
+        );
+    }
+
+    #[test]
+    fn opencode_setup_without_enforce_removes_the_guard_but_not_the_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        setup_opencode(&paths, "/bin/astlens", true).unwrap();
+        setup_opencode(&paths, "/bin/astlens", false).unwrap();
+
+        assert!(!paths.opencode_plugin.exists());
+        assert!(!paths.opencode_guard.exists());
+        let memory = fs::read_to_string(&paths.opencode_memory).unwrap();
+        assert!(!memory.contains(MEMORY_BEGIN));
+        assert!(
+            fs::read_to_string(&paths.opencode_config)
+                .unwrap()
+                .contains("\"astlens\"")
         );
     }
 

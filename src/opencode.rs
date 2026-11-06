@@ -10,22 +10,26 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
 use jsonc_parser::ParseOptions;
-use jsonc_parser::cst::CstRootNode;
-use jsonc_parser::json;
+use jsonc_parser::cst::{CstInputValue, CstRootNode};
 
 use crate::atomic::write_atomic;
 
 pub const SERVER: &str = "astlens";
 
-/// OpenCode reads `opencode.jsonc` before `opencode.json`; use whichever the
-/// user already has, and create the plain JSON file otherwise.
+/// OpenCode reads both `opencode.json` and `opencode.jsonc`, then merges them
+/// with those beside the project and in `~/.config/opencode`. A server in two
+/// global files is ambiguous, so an existing `opencode.json` wins, then an
+/// existing `opencode.jsonc`; the plain JSON file is created otherwise.
 pub fn config_path(dir: &Path) -> PathBuf {
+    let json = dir.join("opencode.json");
+    if json.exists() {
+        return json;
+    }
     let jsonc = dir.join("opencode.jsonc");
     if jsonc.exists() {
-        jsonc
-    } else {
-        dir.join("opencode.json")
+        return jsonc;
     }
+    json
 }
 
 fn read(path: &Path) -> Result<Option<String>> {
@@ -84,11 +88,18 @@ pub fn add_server(config: &Path, command: &str) -> Result<()> {
     let servers = mcp
         .object_value_or_create("servers")
         .ok_or_else(|| anyhow!("{}: 'mcp.servers' is not an object", config.display()))?;
-    let value = json!({
-        "type": "local",
-        "command": [command, "--serve"],
-        "codemode": false,
-    });
+    let server = vec![
+        ("type".to_string(), CstInputValue::from("local")),
+        (
+            "command".to_string(),
+            CstInputValue::Array(vec![
+                CstInputValue::from(command),
+                CstInputValue::from("--serve"),
+            ]),
+        ),
+        ("codemode".to_string(), CstInputValue::from(false)),
+    ];
+    let value = CstInputValue::Object(server);
     match servers.get(SERVER) {
         Some(property) => property.set_value(value),
         None => {
@@ -197,10 +208,14 @@ mod tests {
     }
 
     #[test]
-    fn the_jsonc_file_is_preferred() {
+    fn an_existing_config_is_reused() {
         let dir = tempfile::tempdir().unwrap();
+        let json = dir.path().join("opencode.json");
         let jsonc = dir.path().join("opencode.jsonc");
+        assert_eq!(config_path(dir.path()), json);
         fs::write(&jsonc, "{}").unwrap();
         assert_eq!(config_path(dir.path()), jsonc);
+        fs::write(&json, "{}").unwrap();
+        assert_eq!(config_path(dir.path()), json);
     }
 }
