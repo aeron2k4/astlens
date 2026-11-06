@@ -7,14 +7,14 @@
 #   scripts/install.sh --version v0.1.0  download that release instead
 #   scripts/install.sh --from-source     build with cargo instead of downloading
 #
-# Without a clone: curl -fsSL https://raw.githubusercontent.com/aeron2k4/astlens/main/scripts/install.sh | bash -s -- [options]
+# Without a clone: curl -fsSL https://raw.githubusercontent.com/aeron2k4/code-scope-mcp/main/scripts/install.sh | bash -s -- [options]
 #
 # The binary goes to ~/.local/bin (ASTLENS_BIN_DIR to change), no sudo needed.
 # A marked block in the rc file of $SHELL adds that directory to PATH if missing.
 # `astlens --uninstall` removes it.
 set -euo pipefail
 
-REPO=aeron2k4/astlens
+REPO=aeron2k4/code-scope-mcp
 # Set when the script runs from a clone; empty when piped from curl.
 REPO_DIR=
 if [ -f "${BASH_SOURCE[0]:-}" ]; then

@@ -31,7 +31,7 @@ Installing takes two steps, on Linux and Windows x86_64 (run it in Git Bash on
 Windows). First the binary, which needs `curl`, not `sudo`:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/aeron2k4/astlens/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/aeron2k4/code-scope-mcp/main/scripts/install.sh | bash
 ```
 
 It checks the latest release against `SHA256SUMS`, saves the binary as
@@ -39,7 +39,7 @@ It checks the latest release against `SHA256SUMS`, saves the binary as
 `PATH` if missing. To install a specific release:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/aeron2k4/astlens/main/scripts/install.sh | bash -s -- --version v0.1.0
+curl -fsSL https://raw.githubusercontent.com/aeron2k4/code-scope-mcp/main/scripts/install.sh | bash -s -- --version v0.1.0
 ```
 
 Then set up Claude Code. This needs `claude`, and `jq` for the hook (on Windows,
@@ -107,8 +107,8 @@ This needs Rust 1.90 or later. Use it on platforms without a prebuilt binary,
 such as macOS and Linux ARM.
 
 ```sh
-git clone https://github.com/aeron2k4/astlens.git
-cd astlens
+git clone https://github.com/aeron2k4/code-scope-mcp.git
+cd code-scope-mcp
 cargo build --release
 ./target/release/astlens --serve /path/to/project
 ```
