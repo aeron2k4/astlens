@@ -68,13 +68,25 @@ function rejected(tool: string, input: Record<string, unknown>, cwd: string): st
 export default Plugin.define({
   id: "astlens-guard",
   async setup(ctx) {
-    await ctx.tool.hook("execute.before", (event) => {
+    await ctx.tool.hook("execute.before", async (event) => {
       const input =
         typeof event.input === "object" && event.input !== null
           ? (event.input as Record<string, unknown>)
           : {}
       const reason = rejected(event.tool, input, ctx.location.directory)
-      if (reason) throw new Error(reason)
+      if (!reason) return
+      // V2 leaves a failed call to the agent, which can retry it; asking for
+      // a permission that no rule allows ends the step with the reason, as a
+      // deny rule does. Nothing is saved, so later calls are judged afresh.
+      await ctx.permission.assert({
+        sessionID: event.sessionID,
+        agent: event.agent,
+        source: { type: "tool", messageID: event.messageID, id: event.id },
+        action: `astlens_guard_${event.tool}`,
+        resources: ["*"],
+        message: reason,
+      })
+      throw new Error(reason)
     })
   },
 })

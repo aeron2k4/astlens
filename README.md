@@ -67,10 +67,14 @@ Claude Code:
 OpenCode (v2):
 
 - Adds the server to `mcp.servers.astlens` in `opencode.json` or
-  `opencode.jsonc` in the OpenCode config directory, usually `~/.config/opencode`.
-  Comments and other settings stay as they are; the file is copied to
-  `opencode.json.bak` first. Its tools are exposed directly, not through Code
-  Mode, as `astlens_<tool>`.
+  `opencode.jsonc` in the OpenCode config directory, usually `~/.config/opencode`,
+  reusing whichever exists. Comments and other settings stay as they are; the
+  file is copied to `opencode.json.bak` first. Its tools are exposed directly,
+  not through Code Mode, as `astlens_<tool>`.
+- OpenCode merges a global `opencode.json` and `opencode.jsonc` one after the
+  other, and a file's `mcp.servers` map replaces the earlier one entirely. If
+  the other file also lists servers, the install says so and leaves it alone
+  rather than adding an entry there for OpenCode to drop.
 - Writes the plugin `~/.config/opencode/plugins/astlens-guard/` with the shared
   guard script.
 - Adds a short instruction block to `~/.config/opencode/AGENTS.md`.

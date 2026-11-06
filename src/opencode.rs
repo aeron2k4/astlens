@@ -32,6 +32,27 @@ pub fn config_path(dir: &Path) -> PathBuf {
     json
 }
 
+/// The other of OpenCode's two global files, when it exists and its
+/// `mcp.servers` would replace the one holding the astlens entry: OpenCode
+/// merges document by document, so whichever comes first wins the whole map.
+/// `dir` is the OpenCode config directory.
+pub fn superseded_config(config: &Path, dir: &Path) -> Option<PathBuf> {
+    let name = config.file_name()?.to_str()?;
+    let other = match name {
+        "opencode.json" => "opencode.jsonc",
+        "opencode.jsonc" => "opencode.json",
+        _ => return None,
+    };
+    let other = dir.join(other);
+    let text = fs::read_to_string(&other).ok()?;
+    let root = CstRootNode::parse(&text, &ParseOptions::default()).ok()?;
+    let servers = root
+        .object_value()
+        .and_then(|object| object.object_value("mcp"))
+        .and_then(|mcp| mcp.object_value("servers"))?;
+    (servers.get(SERVER).is_some() || !servers.properties().is_empty()).then_some(other)
+}
+
 fn read(path: &Path) -> Result<Option<String>> {
     match fs::read_to_string(path) {
         Ok(text) => Ok(Some(text)),
@@ -205,6 +226,31 @@ mod tests {
         fs::write(&config, "{ not json").unwrap();
         assert!(add_server(&config, "/bin/astlens").is_err());
         assert_eq!(fs::read_to_string(&config).unwrap(), "{ not json");
+    }
+
+    #[test]
+    fn a_second_global_config_with_servers_is_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let json = dir.path().join("opencode.json");
+        let jsonc = dir.path().join("opencode.jsonc");
+        let report = |config: &Path| superseded_config(config, dir.path());
+        assert_eq!(report(&json), None);
+
+        // An empty servers map replaces nothing.
+        fs::write(&jsonc, "{\"mcp\": {\"servers\": {}}}").unwrap();
+        assert_eq!(report(&json), None);
+
+        fs::write(
+            &jsonc,
+            "{\"mcp\": {\"servers\": {\"other\": {\"type\": \"remote\"}}}}",
+        )
+        .unwrap();
+        // The plain file is read first, so only the jsonc entry loses servers.
+        assert_eq!(report(&json), Some(jsonc.clone()));
+        assert_eq!(superseded_config(&jsonc, dir.path()), None);
+
+        fs::write(&json, "{}").unwrap();
+        assert_eq!(superseded_config(&json, dir.path()), Some(jsonc));
     }
 
     #[test]

@@ -62,6 +62,8 @@ fn log(message: impl std::fmt::Display) {
 
 /// Files this module touches.
 struct Paths {
+    /// OpenCode's global config directory, `~/.config/opencode`.
+    config_dir: PathBuf,
     claude_hook: PathBuf,
     claude_settings: PathBuf,
     claude_memory: PathBuf,
@@ -86,6 +88,7 @@ impl Paths {
         let opencode = config.join("opencode");
         let plugin = opencode.join("plugins").join("astlens-guard");
         Ok(Self {
+            config_dir: opencode.clone(),
             claude_hook: claude.join("hooks").join(GUARD_NAME),
             claude_settings: claude.join("settings.json"),
             claude_memory: claude.join("CLAUDE.md"),
@@ -266,6 +269,13 @@ fn install_opencode(paths: &Paths, enforce: bool) -> Result<()> {
 /// Everything between locating the binary and the final message, so that tests
 /// can drive it with a fake home.
 fn setup_opencode(paths: &Paths, exe: &str, enforce: bool) -> Result<()> {
+    if let Some(config) = opencode::superseded_config(&paths.opencode_config, &paths.config_dir) {
+        log(format_args!(
+            "Skipping {}: OpenCode would let it replace the astlens entry in {}",
+            config.display(),
+            paths.opencode_config.display()
+        ));
+    }
     log(format_args!(
         "Registering MCP server 'astlens' with OpenCode ({})",
         paths.opencode_config.display()
@@ -334,10 +344,18 @@ pub fn uninstall() -> Result<()> {
         "Removing MCP server registration from OpenCode ({})",
         paths.opencode_config.display()
     ));
-    if let Err(err) = opencode::remove_server(&paths.opencode_config) {
-        log(format_args!(
-            "{err}; if astlens is still listed, remove it from the OpenCode config by hand"
-        ));
+    for config in [
+        Some(&paths.opencode_config),
+        opencode::superseded_config(&paths.opencode_config, &paths.config_dir).as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if let Err(err) = opencode::remove_server(config) {
+            log(format_args!(
+                "{err}; if astlens is still listed, remove it from the OpenCode config by hand"
+            ));
+        }
     }
     log("Removing hooks, instruction blocks and PATH entry");
     remove_files(&paths)?;
@@ -622,6 +640,7 @@ mod tests {
         let opencode = dir.join(".config/opencode");
         let plugin = opencode.join("plugins/astlens-guard");
         Paths {
+            config_dir: opencode.clone(),
             claude_hook: dir.join(".claude/hooks").join(GUARD_NAME),
             claude_settings: dir.join(".claude/settings.json"),
             claude_memory: dir.join(".claude/CLAUDE.md"),
