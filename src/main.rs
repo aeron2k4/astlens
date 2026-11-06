@@ -100,7 +100,7 @@ fn main() -> Result<()> {
     match command {
         Command::Help => print!("{}", cli::HELP),
         Command::Version => println!("v{}", env!("CARGO_PKG_VERSION")),
-        Command::Install { enforce } => install::install(enforce)?,
+        Command::Install { enforce, client } => install::install(enforce, client)?,
         Command::Uninstall => install::uninstall()?,
         Command::Serve(root) => serve(root)?,
     }

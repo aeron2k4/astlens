@@ -9,21 +9,44 @@ AST-aware code navigation MCP server
 Usage: astlens <OPTION>
 
 Options:
-  -i, --install [--no-enforce]  Set up Claude Code: MCP server, hook and CLAUDE.md block.
+  -i, --install [--no-enforce] [--client CLIENT]
+                                Set up Claude Code and/or OpenCode: MCP server,
+                                plus hook/plugin and instructions when enforcing.
+                                CLIENT is claude, opencode or all (the default).
                                 --no-enforce registers the MCP server only
   -u, --uninstall               Undo --install, remove the PATH entry and this binary
-  -s, --serve [ROOT]            Run the MCP server over stdio; Claude Code starts this itself.
+  -s, --serve [ROOT]            Run the MCP server over stdio; the client starts this itself.
                                 ROOT defaults to $ASTLENS_ROOT, then the current directory
   -h, --help                    Show this help
   -v, --version                 Show the version
 ";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Client {
+    Claude,
+    Opencode,
+    All,
+}
+
+impl Client {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "claude" => Ok(Self::Claude),
+            "opencode" => Ok(Self::Opencode),
+            "all" => Ok(Self::All),
+            _ => Err(format!(
+                "unknown client: {value} (expected claude, opencode or all)"
+            )),
+        }
+    }
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
     Help,
     Version,
     Serve(Option<PathBuf>),
-    Install { enforce: bool },
+    Install { enforce: bool, client: Client },
     Uninstall,
 }
 
@@ -54,11 +77,30 @@ pub fn parse(args: &[OsString], interactive: bool) -> Result<Command, String> {
         Some("-h" | "--help") => no_extra(Command::Help),
         Some("-v" | "--version") => no_extra(Command::Version),
         Some("-u" | "--uninstall") => no_extra(Command::Uninstall),
-        Some("-i" | "--install") => match rest.as_slice() {
-            [] => Ok(Command::Install { enforce: true }),
-            [flag] if *flag == "--no-enforce" => Ok(Command::Install { enforce: false }),
-            [other, ..] => Err(format!("unexpected argument: {}", other.display())),
-        },
+        Some("-i" | "--install") => {
+            let mut enforce = true;
+            let mut client = Client::All;
+            let mut i = 0;
+            while i < rest.len() {
+                let arg = rest[i].to_string_lossy();
+                match arg.as_ref() {
+                    "--no-enforce" => enforce = false,
+                    "--client" => {
+                        let Some(value) = rest.get(i + 1) else {
+                            return Err("--client needs claude, opencode or all".into());
+                        };
+                        client = Client::parse(&value.to_string_lossy())?;
+                        i += 1;
+                    }
+                    value if value.starts_with("--client=") => {
+                        client = Client::parse(&value["--client=".len()..])?;
+                    }
+                    _ => return Err(format!("unexpected argument: {arg}")),
+                }
+                i += 1;
+            }
+            Ok(Command::Install { enforce, client })
+        }
         Some(arg) if matches!(arg, "-s" | "--serve") || (arg == "serve" && !interactive) => {
             match rest.as_slice() {
                 [] => Ok(Command::Serve(None)),
@@ -93,11 +135,31 @@ mod tests {
             for flag in ["--install", "-i"] {
                 assert_eq!(
                     run(&[flag], interactive),
-                    Ok(Command::Install { enforce: true })
+                    Ok(Command::Install {
+                        enforce: true,
+                        client: Client::All
+                    })
                 );
                 assert_eq!(
                     run(&[flag, "--no-enforce"], interactive),
-                    Ok(Command::Install { enforce: false })
+                    Ok(Command::Install {
+                        enforce: false,
+                        client: Client::All
+                    })
+                );
+                assert_eq!(
+                    run(&[flag, "--client", "opencode"], interactive),
+                    Ok(Command::Install {
+                        enforce: true,
+                        client: Client::Opencode
+                    })
+                );
+                assert_eq!(
+                    run(&[flag, "--client=claude", "--no-enforce"], interactive),
+                    Ok(Command::Install {
+                        enforce: false,
+                        client: Client::Claude
+                    })
                 );
             }
             for flag in ["--uninstall", "-u"] {
@@ -146,6 +208,9 @@ mod tests {
     fn bad_arguments_are_rejected() {
         assert!(run(&["--nope"], false).is_err());
         assert!(run(&["--install", "--nope"], true).is_err());
+        assert!(run(&["--install", "--client"], true).is_err());
+        assert!(run(&["--install", "--client", "vim"], true).is_err());
+        assert!(run(&["--install", "--client="], true).is_err());
         assert!(run(&["--uninstall", "x"], true).is_err());
         assert!(run(&["--serve", "a", "b"], true).is_err());
         assert!(run(&["/p", "x"], false).is_err());

@@ -1,9 +1,11 @@
-//! `--install` and `--uninstall`: set this binary up in Claude Code at user scope.
+//! `--install` and `--uninstall`: set this binary up in Claude Code and
+//! OpenCode at user scope.
 //!
-//! Install registers the MCP server, writes the guard hook and adds a short
-//! instruction block to `CLAUDE.md`. Uninstall undoes that, removes the block
-//! `scripts/install.sh` added to the shell rc files, and deletes the binary.
-//! Output goes to stderr, like everything else this binary logs.
+//! Install registers the MCP server, writes the guard hook or plugin and adds a
+//! short instruction block to `CLAUDE.md` or `AGENTS.md`. Uninstall undoes
+//! that, removes the block `scripts/install.sh` added to the shell rc files, and
+//! deletes the binary. Output goes to stderr, like everything else this binary
+//! logs.
 
 use std::fs;
 use std::io;
@@ -14,6 +16,8 @@ use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
 
 use crate::atomic::write_atomic;
+use crate::cli::Client;
+use crate::opencode;
 
 const SERVER: &str = "astlens";
 const GUARD: &str = include_str!("../scripts/astlens-guard.sh");
@@ -34,6 +38,18 @@ Use Read/Grep for non-code files or when astlens fails.
 Load the tools with ToolSearch (\"select:mcp__astlens__...\") if they are deferred.
 ";
 
+const OPENCODE_MEMORY_TEXT: &str = "\
+# Code navigation
+When exploring or reading source code, prefer the astlens MCP tools over read/grep:
+- `astlens_get_file_outline` before opening a file; `astlens_search_symbols` to find a definition.
+- `astlens_read_symbol` to read one function/class instead of the whole file.
+- `astlens_replace_symbol` to rewrite or delete a whole function/class, `astlens_insert_symbol` to add one; no read needed.
+- `astlens_read_file_pruned` when a whole file is needed but may be large.
+- `astlens_find_references` to see where a symbol is used; `astlens_search_text` instead of grep.
+- `astlens_changed_symbols` to see which symbols a diff touches before reading it.
+Use read/grep for non-code files or when astlens fails.
+";
+
 // Must match the markers in scripts/install.sh.
 const RC_BEGIN: &str = "# astlens:begin";
 const RC_END: &str = "# astlens:end";
@@ -44,9 +60,11 @@ fn log(message: impl std::fmt::Display) {
 
 /// Files this module touches.
 struct Paths {
-    hook: PathBuf,
-    settings: PathBuf,
-    memory: PathBuf,
+    claude_hook: PathBuf,
+    claude_settings: PathBuf,
+    claude_memory: PathBuf,
+    opencode_config: PathBuf,
+    opencode_memory: PathBuf,
     rc_files: Vec<PathBuf>,
     cargo_bin: PathBuf,
 }
@@ -61,10 +79,13 @@ impl Paths {
         let claude = var("CLAUDE_CONFIG_DIR").unwrap_or_else(|| home.join(".claude"));
         let zsh = var("ZDOTDIR").unwrap_or_else(|| home.clone());
         let config = var("XDG_CONFIG_HOME").unwrap_or_else(|| home.join(".config"));
+        let opencode = config.join("opencode");
         Ok(Self {
-            hook: claude.join("hooks").join(GUARD_NAME),
-            settings: claude.join("settings.json"),
-            memory: claude.join("CLAUDE.md"),
+            claude_hook: claude.join("hooks").join(GUARD_NAME),
+            claude_settings: claude.join("settings.json"),
+            claude_memory: claude.join("CLAUDE.md"),
+            opencode_config: opencode::config_path(&opencode),
+            opencode_memory: opencode.join("AGENTS.md"),
             rc_files: vec![
                 home.join(".bashrc"),
                 home.join(".bash_profile"),
@@ -93,8 +114,30 @@ fn claude(args: &[&str]) -> io::Result<Output> {
     }
 }
 
+/// Like [`claude`], for OpenCode's npm-provided Windows wrapper.
+fn opencode(args: &[&str]) -> io::Result<Output> {
+    let run = |program: &str| {
+        Command::new(program)
+            .args(args)
+            .stdin(Stdio::null())
+            .output()
+    };
+    match run("opencode") {
+        Err(err) if cfg!(windows) && err.kind() == io::ErrorKind::NotFound => run("opencode.cmd"),
+        other => other,
+    }
+}
+
 fn has_jq() -> bool {
     Command::new("jq")
+        .arg("--version")
+        .stdin(Stdio::null())
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
+fn has_bash() -> bool {
+    Command::new("bash")
         .arg("--version")
         .stdin(Stdio::null())
         .output()
@@ -117,11 +160,48 @@ fn native_path(path: &Path) -> String {
     }
 }
 
-pub fn install(enforce: bool) -> Result<()> {
+fn claude_available() -> bool {
+    claude(&["--version"]).is_ok_and(|output| output.status.success())
+}
+
+fn opencode_available(paths: &Paths) -> bool {
+    opencode(&["--version"]).is_ok_and(|output| output.status.success())
+        || paths.opencode_config.parent().is_some_and(Path::exists)
+}
+
+pub fn install(enforce: bool, client: Client) -> Result<()> {
     let paths = Paths::from_env()?;
-    if let Err(err) = claude(&["--version"]) {
-        bail!("cannot run 'claude' ({err}); install Claude Code first");
+    let (claude_target, opencode_target) = match client {
+        Client::Claude => {
+            if !claude_available() {
+                bail!("cannot run 'claude'; install Claude Code first");
+            }
+            (true, false)
+        }
+        Client::Opencode => (false, true),
+        Client::All => {
+            let claude_target = claude_available();
+            let opencode_target = opencode_available(&paths);
+            if !claude_target && !opencode_target {
+                bail!("neither Claude Code nor OpenCode was found; install one first");
+            }
+            (claude_target, opencode_target)
+        }
+    };
+
+    if claude_target {
+        install_claude(&paths, enforce)?;
     }
+    if opencode_target {
+        install_opencode(&paths, enforce)?;
+    }
+    log(
+        "Done. Restart Claude Code, or start a new OpenCode session, then check the MCP server list",
+    );
+    Ok(())
+}
+
+fn install_claude(paths: &Paths, enforce: bool) -> Result<()> {
     if enforce && !has_jq() {
         bail!(
             "'jq' not found, and the hook needs it; install jq, or use --no-enforce to skip the hook"
@@ -129,9 +209,7 @@ pub fn install(enforce: bool) -> Result<()> {
     }
 
     let exe = current_exe()?;
-    log(format_args!(
-        "Registering MCP server '{SERVER}' (user scope)"
-    ));
+    log("Registering MCP server 'astlens' with Claude Code (user scope)");
     // alwaysLoad keeps the tools in the model's manifest; without it Claude Code
     // defers them behind ToolSearch and the model falls back to Read/Grep.
     let config = json!({
@@ -143,20 +221,54 @@ pub fn install(enforce: bool) -> Result<()> {
     register(&config.to_string(), claude)?;
 
     if enforce {
-        log(format_args!("Writing hook {}", paths.hook.display()));
-        write_hook(&paths.hook)?;
-        log(format_args!("Adding hook to {}", paths.settings.display()));
-        add_hook_to_settings(&paths)?;
+        log(format_args!("Writing hook {}", paths.claude_hook.display()));
+        write_hook(&paths.claude_hook)?;
+        log(format_args!(
+            "Adding hook to {}",
+            paths.claude_settings.display()
+        ));
+        add_hook_to_settings(paths)?;
         log(format_args!(
             "Adding instructions to {}",
-            paths.memory.display()
+            paths.claude_memory.display()
         ));
-        add_memory(&paths.memory)?;
+        add_memory(&paths.claude_memory, MEMORY_TEXT)?;
     } else {
-        log("Removing any hook and CLAUDE.md block from an earlier install");
-        remove_enforcement(&paths)?;
+        log("Removing any Claude Code hook and CLAUDE.md block from an earlier install");
+        remove_enforcement(paths)?;
     }
-    log("Done. Restart Claude Code, then check with: claude mcp list");
+    Ok(())
+}
+
+fn install_opencode(paths: &Paths, enforce: bool) -> Result<()> {
+    if enforce && !has_jq() {
+        bail!(
+            "'jq' not found, and the guard plugin needs it; install jq, or use --no-enforce to skip the guard"
+        );
+    }
+    if enforce && !has_bash() {
+        bail!(
+            "'bash' not found, and the guard plugin needs it; install bash, or use --no-enforce to skip the guard"
+        );
+    }
+
+    let exe = current_exe()?;
+    log(format_args!(
+        "Registering MCP server 'astlens' with OpenCode ({})",
+        paths.opencode_config.display()
+    ));
+    opencode::add_server(&paths.opencode_config, &native_path(&exe))?;
+
+    if enforce {
+        log(format_args!(
+            "Adding instructions to {}",
+            paths.opencode_memory.display()
+        ));
+        add_memory(&paths.opencode_memory, OPENCODE_MEMORY_TEXT)?;
+    } else {
+        log("Removing any OpenCode guard and AGENTS.md block from an earlier install");
+        remove_opencode_enforcement(paths)?;
+    }
     Ok(())
 }
 
@@ -186,7 +298,7 @@ fn register(config: &str, mut run: impl FnMut(&[&str]) -> io::Result<Output>) ->
 
 pub fn uninstall() -> Result<()> {
     let paths = Paths::from_env()?;
-    log("Removing MCP server registration");
+    log("Removing MCP server registration from Claude Code");
     let failure = match claude(&["mcp", "remove", "--scope", "user", SERVER]) {
         Ok(output) if output.status.success() => None,
         Ok(output) => Some(format!(
@@ -200,7 +312,16 @@ pub fn uninstall() -> Result<()> {
             "{failure}; if it is still listed, remove it later with: claude mcp remove --scope user {SERVER}"
         ));
     }
-    log("Removing hook, CLAUDE.md block and PATH entry");
+    log(format_args!(
+        "Removing MCP server registration from OpenCode ({})",
+        paths.opencode_config.display()
+    ));
+    if let Err(err) = opencode::remove_server(&paths.opencode_config) {
+        log(format_args!(
+            "{err}; if astlens is still listed, remove it from the OpenCode config by hand"
+        ));
+    }
+    log("Removing hooks, instruction blocks and PATH entry");
     remove_files(&paths)?;
     remove_binary(&current_exe()?, &paths.cargo_bin);
     log("Done. Restart Claude Code and open a new shell.");
@@ -246,18 +367,21 @@ fn write_settings(path: &Path, settings: &Value) -> Result<()> {
 }
 
 fn add_hook_to_settings(paths: &Paths) -> Result<()> {
-    let mut settings = match read_settings(&paths.settings)? {
+    let mut settings = match read_settings(&paths.claude_settings)? {
         Some(settings) => {
-            let backup = paths.settings.with_extension("json.bak");
-            fs::copy(&paths.settings, &backup)
+            let backup = paths.claude_settings.with_extension("json.bak");
+            fs::copy(&paths.claude_settings, &backup)
                 .with_context(|| format!("cannot write {}", backup.display()))?;
             settings
         }
         None => json!({}),
     };
     // Quoted, so that a home directory with a space keeps working.
-    add_hook(&mut settings, &format!("\"{}\"", native_path(&paths.hook)))?;
-    write_settings(&paths.settings, &settings)
+    add_hook(
+        &mut settings,
+        &format!("\"{}\"", native_path(&paths.claude_hook)),
+    )?;
+    write_settings(&paths.claude_settings, &settings)
 }
 
 /// Append our entry after the existing hooks, replacing an earlier one.
@@ -315,7 +439,7 @@ fn strip_hook(settings: &mut Value) {
     }
 }
 
-fn add_memory(path: &Path) -> Result<()> {
+fn add_memory(path: &Path, block: &str) -> Result<()> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
     }
@@ -328,7 +452,7 @@ fn add_memory(path: &Path) -> Result<()> {
     if !text.is_empty() && !text.ends_with('\n') {
         text.push('\n');
     }
-    text.push_str(&format!("{MEMORY_BEGIN}\n{MEMORY_TEXT}{MEMORY_END}\n"));
+    text.push_str(&format!("{MEMORY_BEGIN}\n{block}{MEMORY_END}\n"));
     write_atomic(path, &text).with_context(|| format!("cannot write {}", path.display()))
 }
 
@@ -370,6 +494,7 @@ fn strip_block_in_file(path: &Path, begin: &str, end: &str) -> Result<()> {
 /// Everything uninstall removes except the MCP registration and the binary.
 fn remove_files(paths: &Paths) -> Result<()> {
     remove_enforcement(paths)?;
+    remove_opencode_enforcement(paths)?;
     for rc in &paths.rc_files {
         strip_block_in_file(rc, RC_BEGIN, RC_END)?;
     }
@@ -379,20 +504,27 @@ fn remove_files(paths: &Paths) -> Result<()> {
 /// What `--install` adds and `--install --no-enforce` does not: the hook, its
 /// entry in the settings and the CLAUDE.md block.
 fn remove_enforcement(paths: &Paths) -> Result<()> {
-    if let Some(mut settings) = read_settings(&paths.settings)? {
+    if let Some(mut settings) = read_settings(&paths.claude_settings)? {
         let before = settings.clone();
         strip_hook(&mut settings);
         if settings != before {
-            write_settings(&paths.settings, &settings)?;
+            write_settings(&paths.claude_settings, &settings)?;
         }
     }
-    match fs::remove_file(&paths.hook) {
+    match fs::remove_file(&paths.claude_hook) {
         Err(err) if err.kind() != io::ErrorKind::NotFound => {
-            return Err(err).with_context(|| format!("cannot remove {}", paths.hook.display()));
+            return Err(err)
+                .with_context(|| format!("cannot remove {}", paths.claude_hook.display()));
         }
         _ => {}
     }
-    strip_block_in_file(&paths.memory, MEMORY_BEGIN, MEMORY_END)
+    strip_block_in_file(&paths.claude_memory, MEMORY_BEGIN, MEMORY_END)
+}
+
+/// What OpenCode enforcement adds: the AGENTS.md block (and, once the guard is
+/// installed, its plugin).
+fn remove_opencode_enforcement(paths: &Paths) -> Result<()> {
+    strip_block_in_file(&paths.opencode_memory, MEMORY_BEGIN, MEMORY_END)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -440,9 +572,11 @@ mod tests {
 
     fn paths(dir: &Path) -> Paths {
         Paths {
-            hook: dir.join("claude/hooks").join(GUARD_NAME),
-            settings: dir.join("claude/settings.json"),
-            memory: dir.join("claude/CLAUDE.md"),
+            claude_hook: dir.join("claude/hooks").join(GUARD_NAME),
+            claude_settings: dir.join("claude/settings.json"),
+            claude_memory: dir.join("claude/CLAUDE.md"),
+            opencode_config: dir.join("opencode/opencode.json"),
+            opencode_memory: dir.join("opencode/AGENTS.md"),
             rc_files: vec![dir.join(".bashrc"), dir.join("fish/config.fish")],
             cargo_bin: dir.join(".cargo/bin"),
         }
@@ -573,9 +707,9 @@ mod tests {
     fn install_files_can_be_repeated_and_removed() {
         let dir = tempfile::tempdir().unwrap();
         let paths = paths(dir.path());
-        fs::create_dir_all(paths.settings.parent().unwrap()).unwrap();
-        fs::write(&paths.settings, r#"{"model": "x"}"#).unwrap();
-        fs::write(&paths.memory, "mine").unwrap();
+        fs::create_dir_all(paths.claude_settings.parent().unwrap()).unwrap();
+        fs::write(&paths.claude_settings, r#"{"model": "x"}"#).unwrap();
+        fs::write(&paths.claude_memory, "mine").unwrap();
         fs::write(
             &paths.rc_files[0],
             format!("before\n{RC_BEGIN}\nexport PATH=x\n{RC_END}\nafter\n"),
@@ -583,24 +717,24 @@ mod tests {
         .unwrap();
 
         for _ in 0..2 {
-            write_hook(&paths.hook).unwrap();
+            write_hook(&paths.claude_hook).unwrap();
             add_hook_to_settings(&paths).unwrap();
-            add_memory(&paths.memory).unwrap();
+            add_memory(&paths.claude_memory, MEMORY_TEXT).unwrap();
         }
-        let settings = read_settings(&paths.settings).unwrap().unwrap();
+        let settings = read_settings(&paths.claude_settings).unwrap().unwrap();
         assert_eq!(commands(&settings).len(), 1);
-        let memory = fs::read_to_string(&paths.memory).unwrap();
+        let memory = fs::read_to_string(&paths.claude_memory).unwrap();
         assert_eq!(memory.matches(MEMORY_BEGIN).count(), 1);
         assert!(memory.starts_with("mine\n"));
-        assert!(paths.hook.exists());
+        assert!(paths.claude_hook.exists());
 
         remove_files(&paths).unwrap();
-        assert!(!paths.hook.exists());
+        assert!(!paths.claude_hook.exists());
         assert_eq!(
-            read_settings(&paths.settings).unwrap().unwrap(),
+            read_settings(&paths.claude_settings).unwrap().unwrap(),
             json!({"model": "x"})
         );
-        assert_eq!(fs::read_to_string(&paths.memory).unwrap(), "mine\n");
+        assert_eq!(fs::read_to_string(&paths.claude_memory).unwrap(), "mine\n");
         assert_eq!(
             fs::read_to_string(&paths.rc_files[0]).unwrap(),
             "before\nafter\n"
@@ -611,19 +745,19 @@ mod tests {
     fn no_enforce_removes_the_hook_but_keeps_the_path_entry() {
         let dir = tempfile::tempdir().unwrap();
         let paths = paths(dir.path());
-        fs::create_dir_all(paths.settings.parent().unwrap()).unwrap();
-        fs::write(&paths.settings, "{}").unwrap();
+        fs::create_dir_all(paths.claude_settings.parent().unwrap()).unwrap();
+        fs::write(&paths.claude_settings, "{}").unwrap();
         let rc = format!("{RC_BEGIN}\nexport PATH=x\n{RC_END}\n");
         fs::write(&paths.rc_files[0], &rc).unwrap();
-        write_hook(&paths.hook).unwrap();
+        write_hook(&paths.claude_hook).unwrap();
         add_hook_to_settings(&paths).unwrap();
-        add_memory(&paths.memory).unwrap();
+        add_memory(&paths.claude_memory, MEMORY_TEXT).unwrap();
 
         remove_enforcement(&paths).unwrap();
-        assert!(!paths.hook.exists());
-        let settings = read_settings(&paths.settings).unwrap().unwrap();
+        assert!(!paths.claude_hook.exists());
+        let settings = read_settings(&paths.claude_settings).unwrap().unwrap();
         assert!(commands(&settings).is_empty());
-        let memory = fs::read_to_string(&paths.memory).unwrap();
+        let memory = fs::read_to_string(&paths.claude_memory).unwrap();
         assert!(!memory.contains(MEMORY_BEGIN));
         assert_eq!(fs::read_to_string(&paths.rc_files[0]).unwrap(), rc);
     }
@@ -632,11 +766,36 @@ mod tests {
     fn invalid_settings_are_left_alone() {
         let dir = tempfile::tempdir().unwrap();
         let paths = paths(dir.path());
-        fs::create_dir_all(paths.settings.parent().unwrap()).unwrap();
-        fs::write(&paths.settings, "{ not json").unwrap();
+        fs::create_dir_all(paths.claude_settings.parent().unwrap()).unwrap();
+        fs::write(&paths.claude_settings, "{ not json").unwrap();
         assert!(add_hook_to_settings(&paths).is_err());
         assert!(remove_files(&paths).is_err());
-        assert_eq!(fs::read_to_string(&paths.settings).unwrap(), "{ not json");
+        assert_eq!(
+            fs::read_to_string(&paths.claude_settings).unwrap(),
+            "{ not json"
+        );
+    }
+
+    #[test]
+    fn opencode_instructions_can_be_repeated_and_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        fs::create_dir_all(paths.opencode_memory.parent().unwrap()).unwrap();
+        fs::write(&paths.opencode_memory, "mine").unwrap();
+
+        for _ in 0..2 {
+            add_memory(&paths.opencode_memory, OPENCODE_MEMORY_TEXT).unwrap();
+        }
+        let memory = fs::read_to_string(&paths.opencode_memory).unwrap();
+        assert_eq!(memory.matches(MEMORY_BEGIN).count(), 1);
+        assert!(memory.starts_with("mine\n"));
+        assert!(memory.contains("astlens_read_symbol"));
+
+        remove_opencode_enforcement(&paths).unwrap();
+        assert_eq!(
+            fs::read_to_string(&paths.opencode_memory).unwrap(),
+            "mine\n"
+        );
     }
 
     #[test]

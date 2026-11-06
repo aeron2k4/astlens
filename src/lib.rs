@@ -7,3 +7,4 @@ pub mod git;
 pub mod index;
 pub mod install;
 pub mod mcp;
+pub mod opencode;
