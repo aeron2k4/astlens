@@ -164,5 +164,14 @@ cat src/main.rs
 END
 )\""
 
+# OpenCode gets its own tool names in the denial reason.
+reason=$(jq -n --arg c "$WS" \
+  '{tool_name: "Read", cwd: $c, tool_input: {file_path: "src/main.rs"}}' |
+  ASTLENS_OPENCODE=1 bash "$GUARD" | jq -r '.hookSpecificOutput.permissionDecisionReason // empty')
+case "$reason" in
+  *astlens_read_symbol*) ;;
+  *) printf 'FAIL OpenCode hint: %s\n' "$reason"; fail=1 ;;
+esac
+
 ((fail)) && exit 1
 echo 'guard: all cases pass'

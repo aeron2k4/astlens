@@ -53,6 +53,12 @@ READ_HINT='Use astlens MCP tools instead (load with ToolSearch "select:mcp__astl
 
 GREP_HINT='Use astlens MCP tools instead (load with ToolSearch "select:mcp__astlens__search_text,mcp__astlens__find_references"): search_text for a literal or regex (.gitignore-aware, shows the enclosing symbol; takes dir), find_references for uses of a symbol. Searching non-code files stays allowed: pass a non-code path, or a filter such as --include="*.md" / -g "*.md" / type md.'
 
+# OpenCode reaches the same tools as astlens_<tool>, without ToolSearch.
+if [ "${ASTLENS_OPENCODE:-}" = 1 ]; then
+  READ_HINT='Use astlens MCP tools instead: astlens_get_file_outline / astlens_read_symbol / astlens_read_file_pruned. To rewrite a whole function or class use astlens_replace_symbol, to add one use astlens_insert_symbol.'
+  GREP_HINT='Use astlens MCP tools instead: astlens_search_text for a literal or regex (.gitignore-aware, shows the enclosing symbol; takes dir), astlens_find_references for uses of a symbol. Searching non-code files stays allowed: pass a non-code path, or a filter such as include "*.md".'
+fi
+
 deny() {
   jq -n --arg r "$1" '{hookSpecificOutput: {hookEventName: "PreToolUse",
     permissionDecision: "deny", permissionDecisionReason: $r}}'

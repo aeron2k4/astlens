@@ -22,6 +22,8 @@ use crate::opencode;
 const SERVER: &str = "astlens";
 const GUARD: &str = include_str!("../scripts/astlens-guard.sh");
 const GUARD_NAME: &str = "astlens-guard.sh";
+const OPENCODE_PLUGIN: &str = include_str!("../scripts/opencode-guard.ts");
+const OPENCODE_PLUGIN_NAME: &str = "index.ts";
 
 const MEMORY_BEGIN: &str = "<!-- astlens:begin -->";
 const MEMORY_END: &str = "<!-- astlens:end -->";
@@ -65,6 +67,8 @@ struct Paths {
     claude_memory: PathBuf,
     opencode_config: PathBuf,
     opencode_memory: PathBuf,
+    opencode_plugin: PathBuf,
+    opencode_guard: PathBuf,
     rc_files: Vec<PathBuf>,
     cargo_bin: PathBuf,
 }
@@ -80,12 +84,15 @@ impl Paths {
         let zsh = var("ZDOTDIR").unwrap_or_else(|| home.clone());
         let config = var("XDG_CONFIG_HOME").unwrap_or_else(|| home.join(".config"));
         let opencode = config.join("opencode");
+        let plugin = opencode.join("plugins").join("astlens-guard");
         Ok(Self {
             claude_hook: claude.join("hooks").join(GUARD_NAME),
             claude_settings: claude.join("settings.json"),
             claude_memory: claude.join("CLAUDE.md"),
             opencode_config: opencode::config_path(&opencode),
             opencode_memory: opencode.join("AGENTS.md"),
+            opencode_plugin: plugin.join(OPENCODE_PLUGIN_NAME),
+            opencode_guard: plugin.join(GUARD_NAME),
             rc_files: vec![
                 home.join(".bashrc"),
                 home.join(".bash_profile"),
@@ -261,6 +268,11 @@ fn install_opencode(paths: &Paths, enforce: bool) -> Result<()> {
 
     if enforce {
         log(format_args!(
+            "Writing guard plugin {}",
+            paths.opencode_plugin.display()
+        ));
+        write_opencode_guard(paths)?;
+        log(format_args!(
             "Adding instructions to {}",
             paths.opencode_memory.display()
         ));
@@ -340,6 +352,14 @@ fn write_hook(hook: &Path) -> Result<()> {
             .with_context(|| format!("cannot make {} executable", hook.display()))?;
     }
     Ok(())
+}
+
+/// The OpenCode plugin is a directory with the TypeScript entry point and the
+/// shared shell guard beside it.
+fn write_opencode_guard(paths: &Paths) -> Result<()> {
+    write_hook(&paths.opencode_guard)?;
+    write_atomic(&paths.opencode_plugin, OPENCODE_PLUGIN)
+        .with_context(|| format!("cannot write {}", paths.opencode_plugin.display()))
 }
 
 /// Read settings, refusing to touch a file that is not a JSON object.
@@ -521,9 +541,30 @@ fn remove_enforcement(paths: &Paths) -> Result<()> {
     strip_block_in_file(&paths.claude_memory, MEMORY_BEGIN, MEMORY_END)
 }
 
-/// What OpenCode enforcement adds: the AGENTS.md block (and, once the guard is
-/// installed, its plugin).
+/// What OpenCode enforcement adds: the plugin directory and the AGENTS.md
+/// block.
 fn remove_opencode_enforcement(paths: &Paths) -> Result<()> {
+    for path in [&paths.opencode_plugin, &paths.opencode_guard] {
+        match fs::remove_file(path) {
+            Err(err) if err.kind() != io::ErrorKind::NotFound => {
+                return Err(err).with_context(|| format!("cannot remove {}", path.display()));
+            }
+            _ => {}
+        }
+    }
+    if let Some(dir) = paths.opencode_plugin.parent() {
+        match fs::remove_dir(dir) {
+            Err(err)
+                if !matches!(
+                    err.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::DirectoryNotEmpty
+                ) =>
+            {
+                return Err(err).with_context(|| format!("cannot remove {}", dir.display()));
+            }
+            _ => {}
+        }
+    }
     strip_block_in_file(&paths.opencode_memory, MEMORY_BEGIN, MEMORY_END)
 }
 
@@ -577,6 +618,10 @@ mod tests {
             claude_memory: dir.join("claude/CLAUDE.md"),
             opencode_config: dir.join("opencode/opencode.json"),
             opencode_memory: dir.join("opencode/AGENTS.md"),
+            opencode_plugin: dir
+                .join("opencode/plugins/astlens-guard")
+                .join(OPENCODE_PLUGIN_NAME),
+            opencode_guard: dir.join("opencode/plugins/astlens-guard").join(GUARD_NAME),
             rc_files: vec![dir.join(".bashrc"), dir.join("fish/config.fish")],
             cargo_bin: dir.join(".cargo/bin"),
         }
@@ -796,6 +841,41 @@ mod tests {
             fs::read_to_string(&paths.opencode_memory).unwrap(),
             "mine\n"
         );
+    }
+
+    #[test]
+    fn opencode_guard_files_can_be_repeated_and_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+
+        for _ in 0..2 {
+            write_opencode_guard(&paths).unwrap();
+        }
+        assert!(paths.opencode_plugin.exists());
+        assert!(paths.opencode_guard.exists());
+        assert!(
+            fs::read_to_string(&paths.opencode_plugin)
+                .unwrap()
+                .contains("astlens-guard")
+        );
+
+        remove_opencode_enforcement(&paths).unwrap();
+        assert!(!paths.opencode_plugin.exists());
+        assert!(!paths.opencode_guard.exists());
+        assert!(!paths.opencode_plugin.parent().unwrap().exists());
+    }
+
+    #[test]
+    fn opencode_guard_leaves_a_shared_plugin_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        write_opencode_guard(&paths).unwrap();
+        let other = paths.opencode_plugin.parent().unwrap().join("other.ts");
+        fs::write(&other, "mine").unwrap();
+
+        remove_opencode_enforcement(&paths).unwrap();
+        assert!(!paths.opencode_plugin.exists());
+        assert_eq!(fs::read_to_string(other).unwrap(), "mine");
     }
 
     #[test]
