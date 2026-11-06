@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Install the astlens binary. Runs on Linux and
 # Windows (in Git Bash), which needs curl, and on macOS, which needs cargo: there
-# are no macOS binaries. Afterwards, `astlens --install` sets up Claude Code.
+# are no macOS binaries. Afterwards, `astlens --install` sets up Claude Code
+# and/or OpenCode.
 #
 #   scripts/install.sh                   download the latest release
 #   scripts/install.sh --version v0.1.0  download that release instead
@@ -38,7 +39,7 @@ while [ $# -gt 0 ]; do
     --from-source) source_build=1 ;;
     --version) [ $# -ge 2 ] || die "--version needs a tag, e.g. v0.1.0"; version=$2; shift ;;
     --version=*) version=${1#--version=} ;;
-    -h|--help) sed -n '2,14p' "${BASH_SOURCE[0]:-$0}" 2>/dev/null || true; exit 0 ;;
+    -h|--help) sed -n '2,15p' "${BASH_SOURCE[0]:-$0}" 2>/dev/null || true; exit 0 ;;
     *) die "unknown option: $1" ;;
   esac
   shift
@@ -152,5 +153,5 @@ fi
 
 add_to_shell "$BIN_DIR"
 
-log "Done. To set up Claude Code, or update its hook after an upgrade, run now:"
+log "Done. To set up Claude Code and/or OpenCode, or update their guard after an upgrade, run now:"
 log "  $BIN --install"

@@ -42,46 +42,63 @@ It checks the latest release against `SHA256SUMS`, saves the binary as
 curl -fsSL https://raw.githubusercontent.com/aeron2k4/code-scope-mcp/main/scripts/install.sh | bash -s -- --version v0.1.0
 ```
 
-Then set up Claude Code. This needs `claude`, and `jq` for the hook (on Windows,
-`winget install jqlang.jq`):
+Then set up the client. This needs `jq`, and `bash` for OpenCode's guard (on
+Windows, `winget install jqlang.jq`):
 
 ```sh
 astlens --install
 ```
 
-Restart Claude Code afterwards. To upgrade, run both steps again.
+It detects Claude Code and OpenCode and sets up each one it finds. Pass
+`--client claude`, `--client opencode`, or `--client all` to choose yourself.
+Restart the client afterwards. To upgrade, run both steps again.
 
 ### What `--install` changes
 
-All of it is at user scope, so it applies to every project:
+All of it is at user scope, so it applies to every project.
+
+Claude Code:
 
 - Registers the MCP server as `astlens`, with its tools always loaded.
 - Writes the hook `~/.claude/hooks/astlens-guard.sh` and wires it in
   `~/.claude/settings.json`.
 - Adds a short instruction block to `~/.claude/CLAUDE.md`.
 
-The hook blocks Claude from reading or searching source files in the session's
-workspace the usual way, and points it to the astlens tools instead. It denies
-whole-file `Read`, the `Grep` tool, and commands such as `cat`, `grep` and `rg`
-on those files. A `Read` or command output limited to 300 lines is still allowed,
-as are non-code files and paths outside the workspace.
+OpenCode (v2):
 
-`astlens --install --no-enforce` registers the MCP server only, with no hook or
-instruction block.
+- Adds the server to `mcp.servers.astlens` in `opencode.json` or
+  `opencode.jsonc` in the OpenCode config directory, usually `~/.config/opencode`.
+  Comments and other settings stay as they are; the file is copied to
+  `opencode.json.bak` first. Its tools are exposed directly, not through Code
+  Mode, as `astlens_<tool>`.
+- Writes the plugin `~/.config/opencode/plugins/astlens-guard/` with the shared
+  guard script.
+- Adds a short instruction block to `~/.config/opencode/AGENTS.md`.
+
+The hook and plugin block the model from reading or searching source files in
+the session's workspace the usual way, and point it to the astlens tools
+instead. They deny whole-file `Read`/`read`, the `Grep`/`grep` tool, and
+commands such as `cat`, `grep` and `rg` on those files. A read or command
+output limited to 300 lines (`ASTLENS_MAX_READ_LINES`) is still allowed, as are
+non-code files and paths outside the workspace.
+
+`astlens --install --no-enforce` registers the MCP server only, with no hook,
+plugin or instruction block.
 
 ## Usage
 
-Once installed, Claude Code starts the server itself, using the session's working
+Once installed, the client starts the server itself, using the session's working
 directory as the workspace root.
 
-| Command                          | Effect                                                   |
-| -------------------------------- | -------------------------------------------------------- |
-| `astlens -i`, `--install`        | Set up Claude Code: MCP server, hook, CLAUDE.md block    |
-| `astlens --install --no-enforce` | Register the MCP server only                             |
-| `astlens -u`, `--uninstall`      | Undo `--install`, remove the `PATH` entry and the binary |
-| `astlens -s`, `--serve [ROOT]`   | Run the server over stdio                                |
-| `astlens -h`, `--help`           | Show the help                                            |
-| `astlens -v`, `--version`        | Show the version                                         |
+| Command                                     | Effect                                                |
+| ------------------------------------------- | ----------------------------------------------------- |
+| `astlens -i`, `--install`                   | Set up Claude Code and/or OpenCode                    |
+| `astlens --install --client opencode`       | Set up only OpenCode                                  |
+| `astlens --install --no-enforce`            | Register the MCP server only                          |
+| `astlens -u`, `--uninstall`                 | Undo `--install`, remove the `PATH` entry and the binary |
+| `astlens -s`, `--serve [ROOT]`              | Run the server over stdio                             |
+| `astlens -h`, `--help`                      | Show the help                                         |
+| `astlens -v`, `--version`                   | Show the version                                      |
 
 `--uninstall` keeps the parse cache in `~/.cache/astlens`.
 
