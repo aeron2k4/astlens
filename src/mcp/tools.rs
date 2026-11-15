@@ -155,10 +155,11 @@ impl Workspace {
     /// leading `~/` standing for the home directory; then canonicalized.
     fn canonical(&self, rel: &str) -> Result<PathBuf> {
         let rel = rel.trim();
-        let home = rel
-            .strip_prefix("~/")
-            .zip(std::env::var_os("HOME"))
-            .map(|(rest, home)| PathBuf::from(home).join(rest));
+        let home = rel.strip_prefix("~/").and_then(|rest| {
+            std::env::var_os("HOME")
+                .or_else(|| std::env::var_os("USERPROFILE"))
+                .map(|home| PathBuf::from(home).join(rest))
+        });
         let joined = home.unwrap_or_else(|| self.root.join(rel));
         joined
             .canonicalize()

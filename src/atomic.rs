@@ -18,7 +18,15 @@ pub fn write_atomic(path: &Path, contents: &str) -> io::Result<()> {
 
     let target = match fs::canonicalize(path) {
         Ok(target) => target,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => path.to_path_buf(),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            if fs::symlink_metadata(path).is_ok_and(|m| m.is_symlink()) {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "symlink target does not exist",
+                ));
+            }
+            path.to_path_buf()
+        }
         Err(err) => return Err(err),
     };
     let meta = match fs::metadata(&target) {
@@ -167,5 +175,17 @@ mod tests {
             fs::metadata(&real).unwrap().permissions().mode() & 0o777,
             0o640
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refuses_a_broken_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let link = dir.path().join("broken-link");
+        std::os::unix::fs::symlink(dir.path().join("missing"), &link).unwrap();
+
+        let err = write_atomic(&link, "new").unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+        assert!(fs::symlink_metadata(&link).unwrap().is_symlink());
     }
 }

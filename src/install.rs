@@ -199,9 +199,9 @@ pub fn install(enforce: bool, client: Client) -> Result<()> {
                 "'jq' not found, and {guard} it; install jq, or use --no-enforce to register the MCP server only"
             );
         }
-        if opencode_target && !runs("bash") {
+        if !runs("bash") {
             bail!(
-                "'bash' not found, and the guard plugin needs it; install bash, or use --no-enforce to register the MCP server only"
+                "'bash' not found, and {guard} it; install bash, or use --no-enforce to register the MCP server only"
             );
         }
     }

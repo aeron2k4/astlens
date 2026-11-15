@@ -255,7 +255,10 @@ impl PersistentStore {
     /// valid UTF-8 are left alone.
     pub fn prune_missing(&self, root: &Path) -> Result<usize, StoreError> {
         let mut prefix = Self::key(root).to_vec();
-        prefix.push(std::path::MAIN_SEPARATOR as u8);
+        let sep = std::path::MAIN_SEPARATOR as u8;
+        if !prefix.ends_with(&[sep]) && !prefix.ends_with(b"/") {
+            prefix.push(sep);
+        }
         let missing: Vec<Vec<u8>> = {
             let rtxn = self.env.read_txn()?;
             self.db

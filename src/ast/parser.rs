@@ -163,7 +163,7 @@ impl Lang {
     fn query(self) -> Result<&'static Query, ParseError> {
         static QUERIES: [OnceLock<Result<Query, String>>; Lang::ALL.len()] =
             [const { OnceLock::new() }; Lang::ALL.len()];
-        let slot = &QUERIES[self as usize];
+        let slot = &QUERIES[self.index()];
         slot.get_or_init(|| {
             Query::new(&self.grammar(), &self.query_source()).map_err(|e| e.to_string())
         })
@@ -1063,7 +1063,11 @@ fn line_start(source: &str, byte: usize) -> usize {
 
 /// 1-based line number of `byte`.
 pub fn line_number(source: &str, byte: usize) -> usize {
-    source[..byte].matches('\n').count() + 1
+    let mut cut = byte.min(source.len());
+    while !source.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    source[..cut].matches('\n').count() + 1
 }
 
 /// Where the lines of `sym` begin: the start of its first line, moved up
@@ -1354,6 +1358,11 @@ fn brackets(lang: Lang, text: &str) -> (Option<usize>, bool) {
             '\'' if single_quotes => quote = Some(c),
             // The rest of the line is a comment.
             '#' if matches!(lang, Lang::Python | Lang::GdScript | Lang::Ruby) => break,
+            '/' if !matches!(lang, Lang::Python | Lang::GdScript | Lang::Ruby)
+                && text[i..].starts_with("//") =>
+            {
+                break;
+            }
             '%' if lang == Lang::Ruby => {
                 if let Some(end) = ruby_percent_literal_end(&text[i..]) {
                     skip_to = i + end;
@@ -2258,5 +2267,21 @@ macro_rules! m { () => {} }
     fn unsupported_extension_is_an_error() {
         let err = parse_path(Path::new("notes.txt"), "hi").unwrap_err();
         assert!(matches!(err, ParseError::UnsupportedLanguage(_)));
+    }
+
+    #[test]
+    fn line_number_safe_on_char_boundary_and_out_of_bounds() {
+        let text = "a\n🦀\nb\n";
+        assert_eq!(line_number(text, 0), 1);
+        assert_eq!(line_number(text, 2), 2);
+        // Byte 3 is inside '🦀' (4-byte UTF-8 starting at byte 2).
+        assert_eq!(line_number(text, 3), 2);
+        assert_eq!(line_number(text, 100), 4);
+    }
+
+    #[test]
+    fn brackets_ignores_double_slash_comments() {
+        assert!(brackets(Lang::Rust, "#[inline] // (open").1);
+        assert!(brackets(Lang::Rust, "#[inline] // )close").1);
     }
 }

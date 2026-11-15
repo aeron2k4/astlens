@@ -26,7 +26,7 @@ pub fn list_files(root: &Path, limit: usize) -> Vec<PathBuf> {
         .filter_map(|entry| file_path(root, entry))
         .take(limit)
         .collect();
-    files.sort();
+    files.sort_by_cached_key(|p| sort_key(p));
     files
 }
 

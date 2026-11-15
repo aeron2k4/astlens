@@ -56,10 +56,14 @@ fn candidates(var: impl Fn(&str) -> Option<OsString>) -> Vec<PathBuf> {
     go_roots.extend(in_home("sdk").iter().flat_map(|sdk| prefixed(sdk, "go")));
     dirs.extend(go_roots.into_iter().map(|root| root.join("src")));
     if cfg!(unix) {
-        for dir in ["/usr/include", "/usr/local/include"] {
+        for dir in [
+            "/usr/include",
+            "/usr/local/include",
+            "/opt/homebrew/include",
+        ] {
             dirs.push(PathBuf::from(dir));
         }
-        for lib in ["/usr/lib", "/usr/local/lib"] {
+        for lib in ["/usr/lib", "/usr/local/lib", "/opt/homebrew/lib"] {
             dirs.push(Path::new(lib).join("node_modules"));
             dirs.extend(pythons(Path::new(lib)));
         }
