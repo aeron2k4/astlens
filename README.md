@@ -1,5 +1,7 @@
 # astlens
 
+[![M8ven Score](https://m8ven.ai/badge/mcp/aeron2k4-code-scope-mcp-19og8q?v=f5616b9cba539014a89025a36868337b)](https://m8ven.ai/mcp/aeron2k4-code-scope-mcp-19og8q?s=readme)
+
 A small, fast MCP server in Rust for AST-aware code navigation. It uses
 tree-sitter to find symbols and trims file contents to fit a token budget, so
 AI coding agents can explore large codebases without reading whole files.

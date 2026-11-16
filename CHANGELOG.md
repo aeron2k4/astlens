@@ -3,6 +3,12 @@
 All notable changes to astlens. Versions follow [Semantic Versioning](https://semver.org/).
 Each entry ends with the commits that made it.
 
+## 0.6.1 (2026-11-17)
+
+### Changed
+
+- Add the M8ven score badge to the README.
+
 ## 0.6.0 (2026-11-11)
 
 ### Added
