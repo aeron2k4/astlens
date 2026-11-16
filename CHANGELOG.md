@@ -3,6 +3,17 @@
 All notable changes to astlens. Versions follow [Semantic Versioning](https://semver.org/).
 Each entry ends with the commits that made it.
 
+## Unreleased
+
+### Added
+
+- A `PRIVACY.md` policy stating that astlens runs locally, sends no data and
+  keeps its parse cache in `~/.cache/astlens`, linked from the README.
+
+### Changed
+
+- `Cargo.toml` names the repository as the package `homepage`.
+
 ## 0.6.2 (2026-11-17)
 
 ### Added

@@ -196,6 +196,11 @@ To install the build as `~/.cargo/bin/astlens` instead, run
 
 To contribute, see [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
+## Privacy
+
+astlens runs locally, sends no data anywhere and keeps no account. Its parse
+cache lives in `~/.cache/astlens`. See [`PRIVACY.md`](PRIVACY.md).
+
 ## License
 
 Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
