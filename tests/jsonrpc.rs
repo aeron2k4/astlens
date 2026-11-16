@@ -125,6 +125,46 @@ async fn mcp_session_over_jsonrpc() {
         .unwrap();
     assert_eq!(search_tool["inputSchema"]["required"], json!(["query"]));
 
+    // Every tool states all four hints as booleans: OpenAI's directory rejects
+    // a tool where any of them is missing.
+    let writers = [
+        "insert_symbol",
+        "replace_lines",
+        "replace_symbol",
+        "replace_text",
+    ];
+    for tool in list["result"]["tools"].as_array().unwrap() {
+        let name = tool["name"].as_str().unwrap();
+        let annotations = tool
+            .pointer("/annotations")
+            .unwrap_or_else(|| panic!("{name}: no annotations"));
+        for hint in [
+            "readOnlyHint",
+            "destructiveHint",
+            "idempotentHint",
+            "openWorldHint",
+        ] {
+            assert!(
+                annotations[hint].is_boolean(),
+                "{name}: {hint} missing or not a boolean"
+            );
+        }
+        assert_eq!(
+            annotations["openWorldHint"], false,
+            "{name} only touches the local filesystem"
+        );
+        assert_eq!(
+            annotations["readOnlyHint"],
+            !writers.contains(&name),
+            "{name}: readOnlyHint"
+        );
+        assert_eq!(
+            annotations["destructiveHint"],
+            matches!(name, "replace_lines" | "replace_symbol" | "replace_text"),
+            "{name}: destructiveHint"
+        );
+    }
+
     let outline = client
         .call(
             3,

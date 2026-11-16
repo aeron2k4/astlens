@@ -120,23 +120,30 @@ directory as the workspace root.
 
 ## Tools
 
-| Tool               | Purpose                                                                          |
-| ------------------ | -------------------------------------------------------------------------------- |
-| `codebase_map`     | The symbols the rest of the code uses most, by file, within `max_tokens`         |
-| `get_file_outline` | Symbols in a file with signatures and line ranges                                |
-| `search_symbols`   | Ranked name search across the workspace (exact > prefix > substring)             |
-| `read_symbol`      | Exact source of one definition, line-numbered                                    |
-| `read_lines`       | A line range of a file, line-numbered, at most 400 lines per call                |
-| `replace_symbol`   | Rewrite or delete one definition without reading the file; rejects syntax errors |
-| `replace_text`     | Exact-text edits, each matching once, applied all or none; rejects syntax errors |
-| `replace_lines`    | Replace/delete a line range, guarded by the lines as they are now                |
-| `insert_symbol`    | Add code after/before a symbol or at the end of a file; rejects syntax errors    |
-| `read_file_pruned` | File text within `max_tokens`: full → bodies elided → outline → truncated        |
-| `find_references`  | Uses of a symbol from identifier tokens (comments and strings skipped)           |
-| `search_text`      | Literal or regex search over files, honouring `.gitignore`, skipping hidden ones |
-| `list_files`       | Files under a directory, honouring `.gitignore`                                  |
-| `changed_symbols`  | Symbols added/modified/removed by uncommitted changes or since a revision        |
-| `git_status`       | Working-tree status                                                              |
+| Tool               | Purpose                                                                          | Access |
+| ------------------ | -------------------------------------------------------------------------------- | ------ |
+| `codebase_map`     | The symbols the rest of the code uses most, by file, within `max_tokens`         | read   |
+| `get_file_outline` | Symbols in a file with signatures and line ranges                                | read   |
+| `search_symbols`   | Ranked name search across the workspace (exact > prefix > substring)             | read   |
+| `read_symbol`      | Exact source of one definition, line-numbered                                    | read   |
+| `read_lines`       | A line range of a file, line-numbered, at most 400 lines per call                | read   |
+| `replace_symbol`   | Rewrite or delete one definition without reading the file; rejects syntax errors | write  |
+| `replace_text`     | Exact-text edits, each matching once, applied all or none; rejects syntax errors | write  |
+| `replace_lines`    | Replace/delete a line range, guarded by the lines as they are now                | write  |
+| `insert_symbol`    | Add code after/before a symbol or at the end of a file; rejects syntax errors    | write  |
+| `read_file_pruned` | File text within `max_tokens`: full → bodies elided → outline → truncated        | read   |
+| `find_references`  | Uses of a symbol from identifier tokens (comments and strings skipped)           | read   |
+| `search_text`      | Literal or regex search over files, honouring `.gitignore`, skipping hidden ones | read   |
+| `list_files`       | Files under a directory, honouring `.gitignore`                                  | read   |
+| `changed_symbols`  | Symbols added/modified/removed by uncommitted changes or since a revision        | read   |
+| `git_status`       | Working-tree status                                                              | read   |
+
+Every tool carries all four MCP annotations as explicit booleans. `read`
+means `readOnlyHint: true`. `write` means `readOnlyHint: false`, and
+`destructiveHint: true` for the three that can delete code (`replace_symbol`,
+`replace_text`, `replace_lines`). `insert_symbol` only adds, so
+`destructiveHint: false`. No tool reaches the network: `openWorldHint: false`
+throughout.
 
 Files in other languages are plain text: `read_lines`, `read_file_pruned` (the
 text, cut at `max_tokens`), `replace_text`, `replace_lines` and `insert_symbol`

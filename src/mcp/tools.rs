@@ -1554,7 +1554,13 @@ impl AstLens {
     }
 
     #[tool(
-        description = "List the symbols (functions, classes, structs, ...) defined in a file with their signatures and line ranges. Much cheaper than reading the file."
+        description = "List the symbols (functions, classes, structs, ...) defined in a file with their signatures and line ranges. Much cheaper than reading the file.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn get_file_outline(
         &self,
@@ -1564,7 +1570,13 @@ impl AstLens {
     }
 
     #[tool(
-        description = "Search symbol definitions by name across the workspace. Returns path:lines, kind, qualified name and signature."
+        description = "Search symbol definitions by name across the workspace. Returns path:lines, kind, qualified name and signature.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn search_symbols(
         &self,
@@ -1575,7 +1587,13 @@ impl AstLens {
     }
 
     #[tool(
-        description = "Map of a codebase for a first look: the symbols the rest of the code uses most (ranked by references between files), with signatures and line ranges, grouped by file, within a token budget. `focus` ranks around given files, directories or identifiers."
+        description = "Map of a codebase for a first look: the symbols the rest of the code uses most (ranked by references between files), with signatures and line ranges, grouped by file, within a token budget. `focus` ranks around given files, directories or identifiers.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn codebase_map(
         &self,
@@ -1592,7 +1610,13 @@ impl AstLens {
     }
 
     #[tool(
-        description = "Return the exact source of one symbol (function, class, ...) in a file, with line numbers."
+        description = "Return the exact source of one symbol (function, class, ...) in a file, with line numbers.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn read_symbol(
         &self,
@@ -1602,7 +1626,13 @@ impl AstLens {
     }
 
     #[tool(
-        description = "Replace the whole source of one symbol (function, class, ...) in a file, without reading the file first. new_source covers exactly the lines read_symbol shows; empty deletes the symbol. Refused if the result has syntax errors."
+        description = "Replace the whole source of one symbol (function, class, ...) in a file, without reading the file first. new_source covers exactly the lines read_symbol shows; empty deletes the symbol. Refused if the result has syntax errors.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false,
+            open_world_hint = false
+        )
     )]
     async fn replace_symbol(
         &self,
@@ -1613,7 +1643,13 @@ impl AstLens {
     }
 
     #[tool(
-        description = "Replace or delete a range of lines in a file without reading it first. `expect` holds those lines as they are now, without line numbers; the write is refused if they no longer match or would introduce syntax errors. Empty new_source deletes the lines."
+        description = "Replace or delete a range of lines in a file without reading it first. `expect` holds those lines as they are now, without line numbers; the write is refused if they no longer match or would introduce syntax errors. Empty new_source deletes the lines.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false,
+            open_world_hint = false
+        )
     )]
     async fn replace_lines(
         &self,
@@ -1624,7 +1660,13 @@ impl AstLens {
     }
 
     #[tool(
-        description = "Replace exact text in a file without reading it first, for changes that are not a whole definition: an import, a few lines, several spots in one file. Each edit's old_text must occur exactly once, whitespace included, in the file as the earlier edits left it. All edits apply or none; refused if the result has syntax errors. Empty new_text deletes."
+        description = "Replace exact text in a file without reading it first, for changes that are not a whole definition: an import, a few lines, several spots in one file. Each edit's old_text must occur exactly once, whitespace included, in the file as the earlier edits left it. All edits apply or none; refused if the result has syntax errors. Empty new_text deletes.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = false,
+            open_world_hint = false
+        )
     )]
     async fn replace_text(
         &self,
@@ -1634,7 +1676,13 @@ impl AstLens {
     }
 
     #[tool(
-        description = "Return lines start..end of a file, numbered, at most 400 per call: for code that is not one definition, such as the line of a compiler error or a search hit. Prefer read_symbol for a whole function or class."
+        description = "Return lines start..end of a file, numbered, at most 400 per call: for code that is not one definition, such as the line of a compiler error or a search hit. Prefer read_symbol for a whole function or class.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn read_lines(
         &self,
@@ -1645,7 +1693,13 @@ impl AstLens {
     }
 
     #[tool(
-        description = "Insert a new function, class, method, ... into a file without reading it first: after or before a named symbol (a blank line apart), or at the end of the file when neither is given. Indent new_source for its place, e.g. inside a class. Refused if the result has syntax errors."
+        description = "Insert a new function, class, method, ... into a file without reading it first: after or before a named symbol (a blank line apart), or at the end of the file when neither is given. Indent new_source for its place, e.g. inside a class. Refused if the result has syntax errors.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false
+        )
     )]
     async fn insert_symbol(
         &self,
@@ -1664,7 +1718,13 @@ impl AstLens {
     }
 
     #[tool(
-        description = "Read a file shrunk to a token budget: the full text if it fits, otherwise function bodies are elided (largest first), falling back to an outline."
+        description = "Read a file shrunk to a token budget: the full text if it fits, otherwise function bodies are elided (largest first), falling back to an outline.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn read_file_pruned(
         &self,
@@ -1677,7 +1737,13 @@ impl AstLens {
     }
 
     #[tool(
-        description = "Find where a symbol is used across the workspace: identifier tokens in the syntax tree, so mentions in comments and strings are skipped. Returns path:line:col, the line and the enclosing symbol."
+        description = "Find where a symbol is used across the workspace: identifier tokens in the syntax tree, so mentions in comments and strings are skipped. Returns path:line:col, the line and the enclosing symbol.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn find_references(
         &self,
@@ -1695,7 +1761,13 @@ impl AstLens {
     }
 
     #[tool(
-        description = "Search file contents for a literal string or regex, respecting .gitignore and skipping hidden files unless `dir` names a hidden directory. Returns path:line, the line and the enclosing symbol; `context` adds the lines around each match. Use instead of grep."
+        description = "Search file contents for a literal string or regex, respecting .gitignore and skipping hidden files unless `dir` names a hidden directory. Returns path:line, the line and the enclosing symbol; `context` adds the lines around each match. Use instead of grep.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn search_text(
         &self,
@@ -1714,7 +1786,15 @@ impl AstLens {
         .await
     }
 
-    #[tool(description = "List files in the workspace, respecting .gitignore.")]
+    #[tool(
+        description = "List files in the workspace, respecting .gitignore.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
     async fn list_files(
         &self,
         Parameters(p): Parameters<ListFilesParams>,
@@ -1724,7 +1804,13 @@ impl AstLens {
     }
 
     #[tool(
-        description = "List the functions, classes, ... added, modified or removed by uncommitted changes (or since `base`, e.g. a branch), per file, instead of reading the raw diff. Untracked files count as added."
+        description = "List the functions, classes, ... added, modified or removed by uncommitted changes (or since `base`, e.g. a branch), per file, instead of reading the raw diff. Untracked files count as added.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn changed_symbols(
         &self,
@@ -1739,7 +1825,15 @@ impl AstLens {
         .await
     }
 
-    #[tool(description = "Show git working-tree status (modified, staged, untracked files).")]
+    #[tool(
+        description = "Show git working-tree status (modified, staged, untracked files).",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
     async fn git_status(&self) -> Result<String, String> {
         self.run(move |ws| ws.git_status()).await
     }
