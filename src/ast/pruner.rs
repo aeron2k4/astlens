@@ -148,6 +148,12 @@ fn elide_bodies(
     if candidates.is_empty() || total < needed {
         return None;
     }
+    // Eliding every body may still leave the text over the budget, and the
+    // full and outline texts below would be built for nothing.
+    let floor = estimate_tokens(source) - total;
+    if floor > opts.max_tokens {
+        return None;
+    }
 
     // Elide the largest bodies first so small helpers stay readable.
     let mut order: Vec<usize> = (0..candidates.len()).collect();
