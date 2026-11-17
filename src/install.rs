@@ -77,7 +77,11 @@ struct Paths {
     opencode_plugin: PathBuf,
     opencode_guard: PathBuf,
     rc_files: Vec<PathBuf>,
+    /// Where `cargo install` puts a binary, `~/.cargo/bin`.
     cargo_bin: PathBuf,
+    /// Where `scripts/install.sh` puts a downloaded one, `~/.local/bin`:
+    /// the same variable and default as that script.
+    bin_dir: PathBuf,
 }
 
 impl Paths {
@@ -109,6 +113,7 @@ impl Paths {
             cargo_bin: var("CARGO_HOME")
                 .unwrap_or_else(|| home.join(".cargo"))
                 .join("bin"),
+            bin_dir: var("ASTLENS_BIN_DIR").unwrap_or_else(|| home.join(".local").join("bin")),
         })
     }
 
@@ -346,7 +351,7 @@ pub fn uninstall() -> Result<()> {
     }
     log("Removing hooks, instruction blocks and PATH entry");
     remove_files(&paths)?;
-    remove_binary(&current_exe()?, &paths.cargo_bin);
+    remove_binary(&current_exe()?, &paths);
     log("Done. Restart Claude Code and open a new shell.");
     Ok(())
 }
@@ -608,18 +613,21 @@ fn remove_opencode_enforcement(paths: &Paths) -> Result<()> {
 
 #[derive(Debug, PartialEq, Eq)]
 enum Owner {
+    /// Installed by `scripts/install.sh`, into its own directory.
+    Script,
+    /// Installed by `cargo install`.
     Cargo,
     PackageManager,
     User,
 }
 
-/// Who should remove this binary. Deleting a cargo or package manager file by
-/// hand would leave that tool's records wrong.
-fn owner(exe: &Path, cargo_bin: &Path) -> Owner {
-    let cargo_bin = cargo_bin
-        .canonicalize()
-        .unwrap_or_else(|_| cargo_bin.to_path_buf());
-    if exe.starts_with(&cargo_bin) {
+/// Who should replace or remove this binary. Writing over a cargo or package
+/// manager file by hand would leave that tool's records wrong.
+fn owner(exe: &Path, paths: &Paths) -> Owner {
+    let canonical = |dir: &Path| dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    if exe.starts_with(canonical(&paths.bin_dir)) {
+        Owner::Script
+    } else if exe.starts_with(canonical(&paths.cargo_bin)) {
         Owner::Cargo
     } else if exe.starts_with(Path::new("/usr")) || exe.starts_with(Path::new("/opt")) {
         Owner::PackageManager
@@ -628,20 +636,20 @@ fn owner(exe: &Path, cargo_bin: &Path) -> Owner {
     }
 }
 
-fn remove_binary(exe: &Path, cargo_bin: &Path) {
+fn remove_binary(exe: &Path, paths: &Paths) {
     let shown = exe.display();
-    match owner(exe, cargo_bin) {
-        Owner::Cargo => log("Installed by cargo; remove it with: cargo uninstall astlens"),
-        Owner::PackageManager => log(format_args!(
-            "Not removing {shown}; use the package manager that installed it"
-        )),
-        Owner::User => match fs::remove_file(exe) {
+    match owner(exe, paths) {
+        Owner::Script | Owner::User => match fs::remove_file(exe) {
             Ok(()) => log(format_args!("Removed {shown}")),
             // Windows refuses to delete a running executable.
             Err(err) => log(format_args!(
                 "Could not remove {shown} ({err}); close Claude Code, then delete it by hand"
             )),
         },
+        Owner::Cargo => log("Installed by cargo; remove it with: cargo uninstall astlens"),
+        Owner::PackageManager => log(format_args!(
+            "Not removing {shown}; use the package manager that installed it"
+        )),
     }
 }
 
@@ -663,6 +671,7 @@ mod tests {
             opencode_guard: plugin.join(GUARD_NAME),
             rc_files: vec![dir.join(".bashrc"), dir.join("fish/config.fish")],
             cargo_bin: dir.join(".cargo/bin"),
+            bin_dir: dir.join(".local/bin"),
         }
     }
 
@@ -1009,14 +1018,27 @@ mod tests {
 
     #[test]
     fn binary_owner_follows_its_location() {
-        let cargo = Path::new("/nonexistent-home/.cargo/bin");
-        let owner_of = |exe: &str| owner(Path::new(exe), cargo);
+        let paths = Paths {
+            config_dir: PathBuf::new(),
+            claude_hook: PathBuf::new(),
+            claude_settings: PathBuf::new(),
+            claude_memory: PathBuf::new(),
+            opencode_memory: PathBuf::new(),
+            opencode_plugin: PathBuf::new(),
+            opencode_guard: PathBuf::new(),
+            rc_files: Vec::new(),
+            cargo_bin: PathBuf::from("/nonexistent-home/.cargo/bin"),
+            bin_dir: PathBuf::from("/nonexistent-home/.local/bin"),
+        };
+        let owner_of = |exe: &str| owner(Path::new(exe), &paths);
         assert_eq!(owner_of("/nonexistent-home/.cargo/bin/x"), Owner::Cargo);
+        assert_eq!(owner_of("/nonexistent-home/.local/bin/x"), Owner::Script);
         assert_eq!(owner_of("/usr/bin/x"), Owner::PackageManager);
         assert_eq!(owner_of("/opt/x/bin/x"), Owner::PackageManager);
         // A sibling directory that merely starts with the same letters.
         assert_eq!(owner_of("/usrlocal/bin/x"), Owner::User);
         assert_eq!(owner_of("/optional/x"), Owner::User);
-        assert_eq!(owner_of("/nonexistent-home/.local/bin/x"), Owner::User);
+        assert_eq!(owner_of("/nonexistent-home/.local/bin2/x"), Owner::User);
+        assert_eq!(owner_of("/nonexistent-home/scratch/x"), Owner::User);
     }
 }
