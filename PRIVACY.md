@@ -5,9 +5,15 @@ that starts it, and it has no backend, no account and no telemetry.
 
 ## What it collects
 
-Nothing. astlens sends no data anywhere. The only network access it makes is
-the download of its own binary and of its dependencies, when you build it or
-install it; the server itself does not open a network connection.
+Nothing. astlens sends no data anywhere, and the server never opens a network
+connection. The only requests come from installing or updating the program:
+
+- `scripts/install.sh` downloads a release from `github.com`.
+- `astlens --update` asks `api.github.com` for the latest release tag, then
+  downloads the asset and its `SHA256SUMS` from `github.com`. Neither request
+  carries anything about you beyond what any HTTP client sends, and nothing is
+  reported back.
+- Building from source fetches its dependencies from `crates.io`.
 
 ## What stays on your machine
 

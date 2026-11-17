@@ -3,6 +3,22 @@
 All notable changes to astlens. Versions follow [Semantic Versioning](https://semver.org/).
 Each entry ends with the commits that made it.
 
+## Unreleased
+
+### Added
+
+- `astlens --update [--check]` downloads the latest GitHub release over the
+  binary that is running, after checking it against the release's
+  `SHA256SUMS`. A binary cargo installed is left alone with the
+  `cargo install --force astlens` command printed instead, so cargo's record
+  stays right; one in `/usr` or `/opt` is left to its package manager.
+  `--check` only reports whether a newer release exists.
+- A second copy of the binary, in cargo's directory or the script's, is named
+  after `--install`, `--uninstall` and `--update`, and left alone otherwise.
+- `--uninstall` tells a binary installed by `scripts/install.sh` from one the
+  user placed elsewhere, since `Paths` now knows `ASTLENS_BIN_DIR` and its
+  `~/.local/bin` default.
+
 ## 0.6.3 (2026-11-17)
 
 ### Added
