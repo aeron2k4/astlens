@@ -12,7 +12,14 @@ version=${version#v}
 changelog=${2:-CHANGELOG.md}
 
 notes=$(awk -v v="$version" '
-  /^## / { if (found) exit; found = ($2 == v); next }
+  /^## / {
+    if (found) exit
+    head = $2
+    gsub(/[][()*#]/, "", head)
+    sub(/^v/, "", head)
+    found = (head == v)
+    next
+  }
   found
 ' "$changelog")
 
