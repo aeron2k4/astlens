@@ -140,6 +140,11 @@ pub fn decode(bytes: &[u8], lang: Lang, has_errors: bool, incomplete: bool) -> R
     }
 
     let count = take(&mut at, bytes)?;
+    // Every entry is at least one byte of delta, so a count past the rest of
+    // the blob is damage.
+    if count > bytes.len() - at {
+        return Err(DecodeError::Truncated);
+    }
     let mut idents = Vec::with_capacity(count.min(1 << 16));
     let mut start = 0usize;
     for _ in 0..count {
@@ -201,7 +206,9 @@ fn take(at: &mut usize, bytes: &[u8]) -> Result<usize> {
             return Ok(value);
         }
         shift += 7;
-        if shift > usize::BITS {
+        // A shift this wide would drop the upper bits of the next byte, so an
+        // overlong encoding is damage, not a number.
+        if shift >= usize::BITS {
             return Err(DecodeError::Truncated);
         }
     }
