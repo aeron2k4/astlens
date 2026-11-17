@@ -593,10 +593,30 @@ pub fn parse_path(path: &Path, source: &str) -> Result<ParsedFile, ParseError> {
         return Ok(parsed);
     }
     // `.h` does not tell C from C++. A file both grammars reject, for instance
-    // over a macro, goes to the one that makes more of it.
+    // over a macro, goes to the one that makes more of it. Re-parsing costs
+    // twice the query budget, so a C header with a mistake of its own is only
+    // tried again when something in it could be C++.
+    if !parsed.symbols.is_empty() && !has_cpp_syntax(source) {
+        return Ok(parsed);
+    }
     let cpp = parse_source(Lang::Cpp, source)?;
     let better = !cpp.has_errors || cpp.symbols.len() > parsed.symbols.len();
     Ok(if better { cpp } else { parsed })
+}
+
+/// Tokens that parse as C++ but not as C, so a `.h` file holding one is worth
+/// a second parse even when its C parse found symbols of its own.
+fn has_cpp_syntax(source: &str) -> bool {
+    const CPP_ONLY: [&str; 7] = [
+        "//",
+        "class ",
+        "template",
+        "namespace ",
+        "public:",
+        "private:",
+        "using ",
+    ];
+    CPP_ONLY.iter().any(|token| source.contains(token))
 }
 
 /// Where the first syntax error in `source` is, as tree-sitter sees it.
@@ -2261,6 +2281,17 @@ macro_rules! m { () => {} }
 
         // Only `.h` is ambiguous.
         assert_eq!(parse_path(Path::new("x.c"), src).unwrap().lang, Lang::C);
+    }
+
+    #[test]
+    fn a_c_header_with_a_mistake_of_its_own_stays_c() {
+        // The C parser finds `add` but trips on the stray brace; nothing in the
+        // file is C++, so a second parse could not do better.
+        let src = "int add(int a, int b);\n}\n";
+        let parsed = parse_path(Path::new("x.h"), src).unwrap();
+        assert_eq!(parsed.lang, Lang::C);
+        assert!(parsed.has_errors);
+        assert!(parsed.symbols.iter().any(|s| s.name == "add"));
     }
 
     #[test]
