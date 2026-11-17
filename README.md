@@ -4,6 +4,8 @@ A small, fast MCP server in Rust for AST-aware code navigation. It uses
 tree-sitter to find symbols and trims file contents to fit a token budget, so
 AI coding agents can explore large codebases without reading whole files.
 
+Landing page: <https://aeron2k4.github.io/astlens/>
+
 Supported languages: Rust, Python, JavaScript, TypeScript/TSX, Go, C, C++, Java,
 C#, GDScript, Ruby. `.h` headers are parsed as C, or as C++ when C fails.
 
