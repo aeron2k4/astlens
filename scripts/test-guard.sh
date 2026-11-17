@@ -25,9 +25,17 @@ fail=0
 
 # verdict <tool> <json tool_input>
 verdict() {
-  jq -n --arg t "$1" --arg c "$WS" --argjson i "$2" \
-    '{tool_name: $t, cwd: $c, tool_input: $i}' | bash "$GUARD" |
-    jq -r '.hookSpecificOutput.permissionDecision // empty'
+  local json
+  json=$(jq -n --arg t "$1" --arg c "$WS" --argjson i "$2" \
+    '{tool_name: $t, cwd: $c, tool_input: $i}' | bash "$GUARD") || {
+    printf 'FAIL guard crashed on: %s\n' "$2" >&2
+    fail=1
+    return
+  }
+  jq -r '.hookSpecificOutput.permissionDecision // empty' <<<"$json" || {
+    printf 'FAIL guard printed no JSON on: %s\n' "$2" >&2
+    fail=1
+  }
 }
 
 expect() {
