@@ -300,16 +300,47 @@ pub fn diff(root: &Path, base: &str, staged: bool) -> Result<Vec<FileDiff>> {
 fn parse_diff(raw: &str) -> Vec<FileDiff> {
     let mut files: Vec<FileDiff> = Vec::new();
     let mut old_path = None;
+    // What the `diff --git` header announced, so that a change whose body says
+    // nothing about its kind, such as a rename of an unchanged file, still
+    // reaches `files`. `header_old` is the same header's old side.
+    let mut kind = None;
+    let mut header_old = None;
+    // Set once the file has its entry: the rest of its lines are content at
+    // most, whatever they look like.
+    let mut pushed = false;
     // Lines left in the current hunk. They are file content, so `--- x` among
     // them is a removed `-- x`, not a header.
     let mut content_lines = 0;
     for line in raw.lines() {
         if content_lines > 0 && line.starts_with(['-', '+']) {
             content_lines -= 1;
-        } else if line.starts_with("diff --git ") {
+        } else if let Some(rest) = line.strip_prefix("diff --git ") {
+            push_announced(&mut files, &mut header_old, kind);
             old_path = None;
+            kind = None;
+            header_old = diff_old_path(rest);
+            pushed = false;
+            content_lines = 0;
+        } else if line.starts_with("@@ ") {
+            // A hunk header, whose `@@` line of content a hunk would have
+            // counted as content already.
+        } else if pushed {
+            // A `+++ b/x` once the file has its entry is content of its hunk.
+        } else if line.starts_with("new file mode ") {
+            kind = Some(Kind::Added);
+        } else if line.starts_with("deleted file mode ") {
+            kind = Some(Kind::Deleted);
+        } else if let Some(_from) = line.strip_prefix("rename from ") {
+            kind = Some(Kind::Moved);
+        } else if let Some(path) = line.strip_prefix("rename to ") {
+            if kind == Some(Kind::Moved) {
+                header_old = Some(header_path(path, "").unwrap_or_else(|| path.to_string()));
+            }
         } else if let Some(p) = line.strip_prefix("--- ") {
             old_path = header_path(p, "a/");
+            if old_path.is_none() {
+                kind = Some(Kind::Added);
+            }
         } else if let Some(p) = line.strip_prefix("+++ ") {
             let new_path = header_path(p, "b/");
             let deleted = new_path.is_none();
@@ -320,10 +351,13 @@ fn parse_diff(raw: &str) -> Vec<FileDiff> {
                 path,
                 old: Vec::new(),
                 new: Vec::new(),
-                added: old_path.is_none() && !deleted,
-                deleted,
+                added: old_path.is_none() && !deleted || kind == Some(Kind::Added),
+                deleted: deleted || kind == Some(Kind::Deleted),
             });
-        } else if let Some(header) = line.strip_prefix("@@ ")
+            pushed = true;
+            kind = None;
+        }
+        if let Some(header) = line.strip_prefix("@@ ")
             && let Some(file) = files.last_mut()
         {
             // @@ -a[,b] +c[,d] @@ context
@@ -340,7 +374,55 @@ fn parse_diff(raw: &str) -> Vec<FileDiff> {
             }
         }
     }
+    push_announced(&mut files, &mut header_old, kind);
     files
+}
+
+/// Push the file a `diff --git` header announced, when neither its rename line
+/// nor its `+++` line did, and forget the header. `header_old` is the path the
+/// entry takes: the old side, or a rename's new side.
+fn push_announced(files: &mut Vec<FileDiff>, header_old: &mut Option<String>, kind: Option<Kind>) {
+    let (added, deleted) = match kind {
+        Some(Kind::Moved) => (false, false),
+        Some(Kind::Added) => (true, false),
+        Some(Kind::Deleted) => (false, true),
+        None => return,
+    };
+    if let Some(path) = header_old.take() {
+        // Only a change the body never recorded is missing here: a `+++` line
+        // pushes the file itself, with its hunks. A rename with no change is
+        // recorded by no other line, so this is where it lands.
+        files.push(FileDiff {
+            path,
+            old: Vec::new(),
+            new: Vec::new(),
+            added,
+            deleted,
+        });
+    }
+}
+
+/// The old side of a `diff --git a/<old> b/<new>` line, which git quotes when a
+/// path holds a character it cannot print as is.
+fn diff_old_path(rest: &str) -> Option<String> {
+    let rest = rest.strip_prefix("a/")?;
+    if let Some(quoted) = rest.strip_prefix('"') {
+        let (path, _) = quoted.split_once('"')?;
+        return Some(path.to_string());
+    }
+    // Without quoting, the two sides are equal or the second starts at ` b/`;
+    // the first such split that names the same path wins is not knowable here,
+    // so take the last one.
+    rest.rfind(" b/").map(|at| rest[..at].to_string())
+}
+
+/// What the `diff --git` header says the change is, when it says it in a line
+/// of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Added,
+    Deleted,
+    Moved,
 }
 
 /// The path in a `---` or `+++` line. Git ends the line with a tab when the
@@ -531,6 +613,57 @@ mod tests {
         assert_eq!(paths, ["q.sql", "z.sql"]);
         assert_eq!(files[0].old, [(2, 2), (9, 1)]);
         assert_eq!(files[0].new, [(2, 2), (9, 1)]);
+    }
+
+    #[test]
+    fn a_rename_with_no_change_is_still_a_file() {
+        let raw = "diff --git a/src/old.rs b/src/new.rs\n\
+                   similarity index 100%\n\
+                   rename from src/old.rs\n\
+                   rename to src/new.rs\n";
+        let files = parse_diff(raw);
+        let paths: Vec<_> = files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, ["src/new.rs"]);
+        assert!(!files[0].added && !files[0].deleted);
+    }
+
+    #[test]
+    fn a_rename_with_changes_is_one_file() {
+        let raw = "diff --git a/a.rs b/b.rs\n\
+                   similarity index 80%\n\
+                   rename from a.rs\n\
+                   rename to b.rs\n\
+                   --- a/a.rs\n\
+                   +++ b/b.rs\n\
+                   @@ -1 +1 @@\n\
+                   -x\n\
+                   +y\n";
+        let files = parse_diff(raw);
+        assert_eq!(files.len(), 1, "{files:?}");
+        assert_eq!(files[0].path, "b.rs");
+        assert_eq!(files[0].old, [(1, 1)]);
+    }
+
+    #[test]
+    fn an_added_empty_file_is_added_without_a_hunk() {
+        let raw = "diff --git a/empty.rs b/empty.rs\n\
+                   new file mode 100644\n\
+                   index 0000000..e69de29\n";
+        let files = parse_diff(raw);
+        assert_eq!(files.len(), 1, "{files:?}");
+        assert_eq!(files[0].path, "empty.rs");
+        assert!(files[0].added);
+        assert!(files[0].old.is_empty());
+    }
+
+    #[test]
+    fn a_deleted_empty_file_is_deleted_without_a_hunk() {
+        let raw = "diff --git a/gone.rs b/gone.rs\n\
+                   deleted file mode 100644\n\
+                   index e69de29..0000000\n";
+        let files = parse_diff(raw);
+        assert_eq!(files.len(), 1, "{files:?}");
+        assert!(files[0].deleted && !files[0].added);
     }
 
     fn git(dir: &Path, args: &[&str]) {
