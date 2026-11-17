@@ -253,13 +253,17 @@ pub fn find_references(
             })
             .collect();
 
+        let go = file.parsed.lang == Lang::Go;
         occurrences
             .iter()
             .filter_map(|o| {
                 // The name in a Go `package` clause is no use of anything, and
                 // is no mention either, so a file holding only that is skipped
-                // above: left out here too, it is never reported.
-                if file.parsed.lang == Lang::Go
+                // above: left out here too, it is never reported. The clause is
+                // the file's first line, so only there is it worth looking
+                // back for the keyword.
+                if go
+                    && o.start_byte < 256
                     && mentions::is_package_clause(&file.source.as_bytes()[..o.start_byte])
                 {
                     return None;
