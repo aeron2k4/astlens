@@ -255,18 +255,29 @@ impl PersistentStore {
     /// valid UTF-8 are left alone.
     pub fn prune_missing(&self, root: &Path) -> Result<usize, StoreError> {
         let mut prefix = Self::key(root).to_vec();
-        let sep = std::path::MAIN_SEPARATOR as u8;
-        if !prefix.ends_with(&[sep]) && !prefix.ends_with(b"/") {
+        // Keys are the bytes of whichever `PathBuf` the caller holds, so the
+        // workspace may have been opened as `C:/ws`: take both separators
+        // rather than the one this platform prefers.
+        if !prefix.ends_with(b"/") && !prefix.ends_with(b"\\") {
+            let sep = std::path::MAIN_SEPARATOR as u8;
             prefix.push(sep);
+        }
+        let mut prefixes = vec![prefix];
+        if std::path::MAIN_SEPARATOR == '/' {
+            prefixes.push([prefixes[0].as_slice(), b"\\"].concat());
         }
         let missing: Vec<Vec<u8>> = {
             let rtxn = self.env.read_txn()?;
-            self.db
-                .prefix_iter(&rtxn, &prefix)?
-                .filter_map(|item| item.ok().map(|(key, _)| key))
-                .filter(|key| std::str::from_utf8(key).is_ok_and(|p| !Path::new(p).exists()))
-                .map(<[u8]>::to_vec)
-                .collect()
+            let mut missing = Vec::new();
+            for prefix in &prefixes {
+                for item in self.db.prefix_iter(&rtxn, prefix)? {
+                    let (key, _) = item?;
+                    if std::str::from_utf8(key).is_ok_and(|p| !Path::new(p).exists()) {
+                        missing.push(key.to_vec());
+                    }
+                }
+            }
+            missing
         };
         if missing.is_empty() {
             return Ok(0);
