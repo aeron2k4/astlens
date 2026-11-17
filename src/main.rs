@@ -19,6 +19,7 @@
 use std::ffi::OsString;
 use std::io::IsTerminal;
 use std::path::PathBuf;
+use std::thread::JoinHandle;
 
 use anyhow::Result;
 use astlens::cli::{self, Command};
@@ -67,31 +68,35 @@ fn cache_dir() -> Option<PathBuf> {
 }
 
 /// Drop stored results of deleted files on a background thread, so the
-/// server answers `initialize` without waiting for the sweep.
-fn prune_in_background(store: PersistentStore, root: PathBuf) {
+/// server answers `initialize` without waiting for the sweep. Its handle goes
+/// back to the caller, whose job it is to wait before the last flush: a save
+/// can clear the store whole, and an entry the sweep has not deleted yet would
+/// then be dropped from an iterator that is still walking it.
+fn prune_in_background(store: PersistentStore, root: PathBuf) -> JoinHandle<()> {
     std::thread::spawn(move || match store.prune_missing(&root) {
         Ok(0) => {}
         Ok(n) => tracing::info!(removed = n, "pruned parse results of deleted files"),
         Err(err) => tracing::warn!(%err, "failed to prune the parse store"),
-    });
+    })
 }
 
 /// Attach the persistent store when available; a broken or unwritable cache
-/// directory only costs re-parsing, so it is never fatal.
-fn with_persistence(workspace: Workspace) -> Workspace {
+/// directory only costs re-parsing, so it is never fatal. The prune sweep it
+/// starts is handed back, None when there is no store.
+fn with_persistence(workspace: Workspace) -> (Workspace, Option<JoinHandle<()>>) {
     let Some(dir) = cache_dir() else {
         tracing::info!("persistent cache disabled");
-        return workspace;
+        return (workspace, None);
     };
     match PersistentStore::open(&dir) {
         Ok(store) => {
             tracing::info!(dir = %dir.display(), "persistent cache enabled");
-            prune_in_background(store.clone(), workspace.root().to_path_buf());
-            workspace.with_store(store)
+            let sweep = prune_in_background(store.clone(), workspace.root().to_path_buf());
+            (workspace.with_store(store), Some(sweep))
         }
         Err(err) => {
             tracing::warn!(%err, "persistent cache unavailable, using memory only");
-            workspace
+            (workspace, None)
         }
     }
 }
@@ -119,8 +124,8 @@ fn main() -> Result<()> {
 #[tokio::main]
 async fn serve(root: Option<PathBuf>) -> Result<()> {
     init_tracing();
-    let mut workspace = with_persistence(Workspace::new(workspace_root(root)?)?)
-        .with_libraries(libraries::default_roots());
+    let (persisted, sweep) = with_persistence(Workspace::new(workspace_root(root)?)?);
+    let mut workspace = persisted.with_libraries(libraries::default_roots());
     if let Some(max) = std::env::var("ASTLENS_MAX_FILES")
         .ok()
         .and_then(|v| v.trim().parse::<usize>().ok())
@@ -145,5 +150,10 @@ async fn serve(root: Option<PathBuf>) -> Result<()> {
         .inspect_err(|err| tracing::error!(%err, "failed to start MCP server"))?;
     service.waiting().await?;
     tracing::info!("client disconnected, shutting down");
+    // Before the cache's last flush, so the two never walk and clear the store
+    // at once. A sweep that panicked is no reason to keep the process alive.
+    if let Some(sweep) = sweep {
+        let _ = sweep.join();
+    }
     Ok(())
 }
