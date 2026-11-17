@@ -14,6 +14,29 @@ Each entry ends with the commits that made it.
 
 - `Cargo.toml` names the repository as the package `homepage`.
 
+### Fixed
+
+- A hook and a binary directory are matched by path, not by a mention of the
+  name, so another project's hook is left alone (`5a21a6c`, `7c8e08a`).
+- A damaged cache blob is rejected instead of decoding a wrong offset
+  (`cc6e948`).
+- Cache entries are pruned under whichever separator built their keys, and the
+  prune sweep finishes before the cache's last flush (`d8441f0`, `7dfb3e4`).
+- A `.h` file is retried as C++ only when it may be C++ (`290ed75`).
+- Line numbers count from the end of the previous identifier or match, so a
+  long line is not rescanned for each hit (`b1d7333`, `51b23d6`).
+- The pruner keeps a file whole when eliding its bodies still would not fit the
+  budget (`726c074`).
+- The temporary file of an atomic write has its owner's mode alone (`155fc6d`).
+- `list_files` and the other tools cap the limit a client asks for, and
+  `find_references` keeps only the hits asked for (`fade128`, `f35f285`,
+  `756d3a1`).
+- A diff keeps the file of a rename with no change, and of an added or deleted
+  empty file, and a hunk's line count no longer overflows (`a760a4a`,
+  `a4f9ed7`).
+- `--install` keeps the first backup of an edited config (`3632ca0`), and the
+  old `serve` command with a root works at a terminal too (`dec02b8`).
+
 ## 0.6.2 (2026-11-17)
 
 ### Added
