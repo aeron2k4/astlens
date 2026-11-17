@@ -106,8 +106,11 @@ pub fn search_text(
         let mut line = 1;
         let mut counted = 0;
         for m in re.find_iter(&source) {
-            line += source[counted..m.start()].matches('\n').count();
-            counted = m.start();
+            // Carried on from the end of the previous match, so a run of
+            // matches inside one line does not rescan that line each time.
+            let from = counted;
+            line += source[from..m.start()].matches('\n').count();
+            counted = counted.max(m.end());
             if last_line != line {
                 last_line = line;
                 matched += 1;
