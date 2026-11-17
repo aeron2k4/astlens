@@ -625,15 +625,32 @@ pub enum Owner {
     User,
 }
 
+/// A path with the symlinks in its directories resolved, and with the same
+/// verbatim prefix `canonicalize` gives the directories it is compared against.
+/// `canonicalize` fails on a file that does not exist yet, so the directory is
+/// resolved on its own: macOS reaches `/var` through `/private/var`, and
+/// Windows prefixes `\\?\`.
+fn canonical_path(path: &Path) -> PathBuf {
+    if let Ok(path) = path.canonicalize() {
+        return path;
+    }
+    let Some(dir) = path.parent().and_then(|dir| dir.canonicalize().ok()) else {
+        return path.to_path_buf();
+    };
+    match path.file_name() {
+        Some(name) => dir.join(name),
+        None => dir,
+    }
+}
+
 /// Who should replace or remove this binary, given the directories it could
 /// have come from. Writing over a cargo or package manager file by hand would
 /// leave that tool's records wrong.
 fn owner_in(exe: &Path, paths: &Paths) -> Owner {
-    let canonical = |dir: &Path| dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
-    let exe = exe.canonicalize().unwrap_or_else(|_| exe.to_path_buf());
-    if exe.starts_with(canonical(&paths.bin_dir)) {
+    let exe = canonical_path(exe);
+    if exe.starts_with(canonical_path(&paths.bin_dir)) {
         Owner::Script
-    } else if exe.starts_with(canonical(&paths.cargo_bin)) {
+    } else if exe.starts_with(canonical_path(&paths.cargo_bin)) {
         Owner::Cargo
     } else if exe.starts_with(Path::new("/usr")) || exe.starts_with(Path::new("/opt")) {
         Owner::PackageManager
@@ -674,15 +691,14 @@ fn remove_binary(exe: &Path, paths: &Paths) {
 /// gets updated, so the other is worth naming rather than deleting.
 fn other_copy(exe: &Path, paths: &Paths) -> Option<PathBuf> {
     let name = exe.file_name()?;
-    let canonical = |dir: &Path| dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
-    let exe = exe.canonicalize().unwrap_or_else(|_| exe.to_path_buf());
+    let exe = canonical_path(exe);
     let other = match owner_in(&exe, paths) {
         Owner::Cargo => &paths.bin_dir,
         Owner::Script => &paths.cargo_bin,
         // Only these two directories hold a copy this project put there.
         Owner::PackageManager | Owner::User => return None,
     };
-    let candidate = canonical(other).join(name);
+    let candidate = canonical_path(other).join(name);
     (candidate != exe && candidate.is_file()).then_some(candidate)
 }
 
