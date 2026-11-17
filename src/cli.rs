@@ -15,6 +15,10 @@ Options:
                                 CLIENT is claude, opencode or all (the default).
                                 --no-enforce registers the MCP server only
   -u, --uninstall               Undo --install, remove the PATH entry and this binary
+  --update [--check]            Download the latest release over this binary, from
+                                GitHub Releases after checking it against SHA256SUMS.
+                                A binary that cargo installed is left alone and the
+                                cargo command is printed instead; --check only reports
   -s, --serve [ROOT]            Run the MCP server over stdio; the client starts this itself.
                                 ROOT defaults to $ASTLENS_ROOT, then the current directory
   -h, --help                    Show this help
@@ -48,6 +52,7 @@ pub enum Command {
     Serve(Option<PathBuf>),
     Install { enforce: bool, client: Client },
     Uninstall,
+    Update { check_only: bool },
 }
 
 /// Parse the arguments after the program name. `interactive` tells whether
@@ -100,6 +105,16 @@ pub fn parse(args: &[OsString], interactive: bool) -> Result<Command, String> {
                 i += 1;
             }
             Ok(Command::Install { enforce, client })
+        }
+        Some("--update") => {
+            let mut check_only = false;
+            for arg in &rest {
+                match arg.to_string_lossy().as_ref() {
+                    "--check" | "--dry-run" => check_only = true,
+                    value => return Err(format!("unexpected argument: {value}")),
+                }
+            }
+            Ok(Command::Update { check_only })
         }
         Some("-s" | "--serve" | "serve") => {
             // `serve` is how an older registration spelled the flag: accepted
@@ -167,6 +182,16 @@ mod tests {
             for flag in ["--uninstall", "-u"] {
                 assert_eq!(run(&[flag], interactive), Ok(Command::Uninstall));
             }
+            assert_eq!(
+                run(&["--update"], interactive),
+                Ok(Command::Update { check_only: false })
+            );
+            for flag in ["--check", "--dry-run"] {
+                assert_eq!(
+                    run(&["--update", flag], interactive),
+                    Ok(Command::Update { check_only: true })
+                );
+            }
             for flag in ["--serve", "-s"] {
                 assert_eq!(run(&[flag], interactive), Ok(Command::Serve(None)));
                 assert_eq!(
@@ -207,6 +232,21 @@ mod tests {
     }
 
     #[test]
+    fn update_is_a_flag_only() {
+        assert_eq!(
+            run(&["--update"], true),
+            Ok(Command::Update { check_only: false })
+        );
+        // Without the flag, the word is an unexpected command in a terminal and
+        // a workspace root in a pipe, like any other word.
+        assert!(run(&["update"], true).is_err());
+        assert_eq!(
+            run(&["update"], false),
+            Ok(Command::Serve(Some("update".into())))
+        );
+    }
+
+    #[test]
     fn a_bare_path_is_a_root_only_outside_a_terminal() {
         assert_eq!(run(&["/p"], false), Ok(Command::Serve(Some("/p".into()))));
         assert!(run(&["/p"], true).is_err());
@@ -220,6 +260,8 @@ mod tests {
         assert!(run(&["--install", "--client", "vim"], true).is_err());
         assert!(run(&["--install", "--client="], true).is_err());
         assert!(run(&["--uninstall", "x"], true).is_err());
+        assert!(run(&["--update", "x"], true).is_err());
+        assert!(run(&["--update", "--check", "x"], false).is_err());
         assert!(run(&["--serve", "a", "b"], true).is_err());
         assert!(run(&["/p", "x"], false).is_err());
         assert!(run(&["serve", "a", "b"], true).is_err());

@@ -9,3 +9,4 @@ pub mod install;
 pub mod libraries;
 pub mod mcp;
 pub mod opencode;
+pub mod update;
