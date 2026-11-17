@@ -57,7 +57,7 @@ pub fn write_atomic(path: &Path, contents: &str) -> io::Result<()> {
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
     let result = (|| {
-        let mut file = fs::File::create_new(&tmp)?;
+        let mut file = create_private(&tmp)?;
         file.write_all(contents.as_bytes())?;
         file.sync_all()?;
         if let Some(permissions) = permissions {
@@ -71,6 +71,20 @@ pub fn write_atomic(path: &Path, contents: &str) -> io::Result<()> {
         sync_dir(dir);
     }
     result
+}
+
+/// Create the temporary file with its owner's mode alone. The original mode is
+/// applied once the contents are in: a file created at the process default can
+/// be readable by others for the moment before that.
+fn create_private(path: &Path) -> io::Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    options.open(path)
 }
 
 /// Whether the file is known under more than one name.
