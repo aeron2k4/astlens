@@ -9,7 +9,7 @@ Nothing. astlens sends no data anywhere, and the server never opens a network
 connection. The only requests come from installing or updating the program:
 
 - `scripts/install.sh` downloads a release from `github.com`.
-- `astlens --update` asks `api.github.com` for the latest release tag, then
+- `astlens update` asks `api.github.com` for the latest release tag, then
   downloads the asset and its `SHA256SUMS` from `github.com`. Neither request
   carries anything about you beyond what any HTTP client sends, and nothing is
   reported back.

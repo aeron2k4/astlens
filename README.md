@@ -55,7 +55,7 @@ Then set up the client. This needs `jq`, and `bash` for OpenCode's guard (on
 Windows, `winget install jqlang.jq`):
 
 ```sh
-astlens --install
+astlens install
 ```
 
 It detects Claude Code and OpenCode and sets up each one it finds. Pass
@@ -65,11 +65,11 @@ Restart the client afterwards.
 ### Updating
 
 ```sh
-astlens --update          # download the latest release over this binary
-astlens --update --check  # only report whether a newer one exists
+astlens update          # download the latest release over this binary
+astlens update --check  # only report whether a newer one exists
 ```
 
-`--update` asks GitHub for the latest release, compares its tag with the
+`update` asks GitHub for the latest release, compares its tag with the
 version running, downloads the asset for your platform and replaces the binary
 that is running, after checking the download against the release's
 `SHA256SUMS`. A checksum mismatch, a failed download or an unwritable directory
@@ -77,16 +77,19 @@ leaves the old binary in place. The asset has no version in its name, so the
 command works the same whatever release is current.
 
 A binary in `~/.local/bin` (installed by `scripts/install.sh`) is replaced. A
-binary cargo installed, in `~/.cargo/bin`, is not: `--update` prints the
+binary cargo installed, in `~/.cargo/bin`, is not: `update` prints the
 version and the command to run instead, `cargo install --force astlens`, so
 cargo's record of what is installed stays right. The same goes for a binary in
 `/usr` or `/opt`, which belongs to a package manager.
 
 If both locations hold a copy, only the one running is updated, and the other
 is named. Remove it with `cargo uninstall astlens` (a cargo copy) or by hand (a
-`~/.local/bin` copy); `--uninstall` removes only the binary it runs from.
+`~/.local/bin` copy); `uninstall` removes only the binary it runs from.
 
-### What `--install` changes
+`astlens doctor` reports the same facts without changing anything: the running
+binary, its installer, the other copy, and whether `update` would replace it.
+
+### What `install` changes
 
 All of it is at user scope, so it applies to every project.
 
@@ -120,7 +123,7 @@ commands such as `cat`, `grep` and `rg` on those files. A read or command
 output limited to 300 lines (`ASTLENS_MAX_READ_LINES`) is still allowed, as are
 non-code files and paths outside the workspace.
 
-`astlens --install --no-enforce` registers the MCP server only, with no hook,
+`astlens install --no-enforce` registers the MCP server only, with no hook,
 plugin or instruction block.
 
 ## Usage
@@ -128,18 +131,27 @@ plugin or instruction block.
 Once installed, the client starts the server itself, using the session's working
 directory as the workspace root.
 
-| Command                                     | Effect                                                |
-| ------------------------------------------- | ----------------------------------------------------- |
-| `astlens -i`, `--install`                   | Set up Claude Code and/or OpenCode                    |
-| `astlens --install --client opencode`       | Set up only OpenCode                                  |
-| `astlens --install --no-enforce`            | Register the MCP server only                          |
-| `astlens -u`, `--uninstall`                 | Undo `--install`, remove the `PATH` entry and the binary |
-| `astlens --update`, `--check`               | Replace this binary with the latest release, or report it |
-| `astlens -s`, `--serve [ROOT]`              | Run the server over stdio                             |
-| `astlens -h`, `--help`                      | Show the help                                         |
-| `astlens -v`, `--version`                   | Show the version                                      |
+| Command                     | Effect                                                       |
+| --------------------------- | ------------------------------------------------------------ |
+| `astlens install`           | Set up Claude Code and/or OpenCode                           |
+| `astlens install --client opencode` | Set up only OpenCode                                 |
+| `astlens install --no-enforce` | Register the MCP server only                              |
+| `astlens uninstall`         | Undo `install`, remove the `PATH` entry and the binary       |
+| `astlens update`            | Replace this binary with the latest release                  |
+| `astlens update --check`    | Only report whether a newer release exists                   |
+| `astlens doctor`            | Report the running binary and how `update` treats it         |
+| `astlens -s`, `--serve [ROOT]` | Run the server over stdio                                 |
+| `astlens -h`, `--help`      | Show the help                                                |
+| `astlens -v`, `--version`   | Show the version                                             |
 
-`--uninstall` keeps the parse cache in `~/.cache/astlens`. `--update` is the
+A bare word names a command. `--serve` and the two display flags stay options
+because the MCP client starts the server itself, and because `--help` and
+`--version` are what every program's user already types. An older install
+spelled `install`, `uninstall` and `update` as flags too; those spellings are
+gone. A directory named after a command is served with `--serve <name>` or
+`$ASTLENS_ROOT`.
+
+`uninstall` keeps the parse cache in `~/.cache/astlens`. `update` is the
 one command that uses the network.
 
 ## Tools
@@ -167,7 +179,7 @@ means `readOnlyHint: true`. `write` means `readOnlyHint: false`, and
 `destructiveHint: true` for the three that can delete code (`replace_symbol`,
 `replace_text`, `replace_lines`). `insert_symbol` only adds, so
 `destructiveHint: false`. No tool reaches the network: `openWorldHint: false`
-throughout. `--update` is a command, not a tool, and is the only thing that
+throughout. `update` is a command, not a tool, and is the only thing that
 does.
 
 Files in other languages are plain text: `read_lines`, `read_file_pruned` (the
@@ -217,16 +229,16 @@ cargo build --release
 ```
 
 To install the build as `~/.cargo/bin/astlens` instead, run
-`scripts/install.sh --from-source`, then `astlens --install`. A binary built
+`scripts/install.sh --from-source`, then `astlens install`. A binary built
 that way is updated with `cargo install --force astlens`, since cargo keeps
-it; `--update` says so.
+it; `update` says so.
 
 To contribute, see [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## Privacy
 
 astlens runs locally, sends no data anywhere and keeps no account. Its parse
-cache lives in `~/.cache/astlens`. `--update` is the only command that
+cache lives in `~/.cache/astlens`. `update` is the only command that
 contacts a server, and only to fetch a release. See [`PRIVACY.md`](PRIVACY.md).
 
 ## License

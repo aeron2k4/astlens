@@ -7,17 +7,28 @@ Each entry ends with the commits that made it.
 
 ### Added
 
-- `astlens --update [--check]` downloads the latest GitHub release over the
+- `astlens doctor` reports the binary that is running, the installer it came
+  from, the copy in the other directory, and what `update` would do with it.
+  It only reads: no file written, no request sent.
+- `astlens update [--check]` downloads the latest GitHub release over the
   binary that is running, after checking it against the release's
   `SHA256SUMS`. A binary cargo installed is left alone with the
   `cargo install --force astlens` command printed instead, so cargo's record
   stays right; one in `/usr` or `/opt` is left to its package manager.
   `--check` only reports whether a newer release exists.
 - A second copy of the binary, in cargo's directory or the script's, is named
-  after `--install`, `--uninstall` and `--update`, and left alone otherwise.
-- `--uninstall` tells a binary installed by `scripts/install.sh` from one the
+  after `install`, `uninstall` and `update`, and left alone otherwise.
+- `uninstall` tells a binary installed by `scripts/install.sh` from one the
   user placed elsewhere, since `Paths` now knows `ASTLENS_BIN_DIR` and its
   `~/.local/bin` default.
+
+### Changed
+
+- `install`, `uninstall` and `update` are commands, not flags: `astlens install`
+  replaces `--install` and `-i`, and the same for `--uninstall`/`-u` and
+  `--update`. A command word is read even where an older registration passes a
+  bare word as the workspace root, so a directory named after a command is
+  served with `--serve <name>` or `$ASTLENS_ROOT`.
 
 ## 0.6.3 (2026-11-17)
 
