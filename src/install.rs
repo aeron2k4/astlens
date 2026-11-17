@@ -621,7 +621,7 @@ fn owner(exe: &Path, cargo_bin: &Path) -> Owner {
         .unwrap_or_else(|_| cargo_bin.to_path_buf());
     if exe.starts_with(&cargo_bin) {
         Owner::Cargo
-    } else if exe.starts_with("/usr") || exe.starts_with("/opt") {
+    } else if exe.starts_with(Path::new("/usr")) || exe.starts_with(Path::new("/opt")) {
         Owner::PackageManager
     } else {
         Owner::User
@@ -1013,6 +1013,10 @@ mod tests {
         let owner_of = |exe: &str| owner(Path::new(exe), cargo);
         assert_eq!(owner_of("/nonexistent-home/.cargo/bin/x"), Owner::Cargo);
         assert_eq!(owner_of("/usr/bin/x"), Owner::PackageManager);
+        assert_eq!(owner_of("/opt/x/bin/x"), Owner::PackageManager);
+        // A sibling directory that merely starts with the same letters.
+        assert_eq!(owner_of("/usrlocal/bin/x"), Owner::User);
+        assert_eq!(owner_of("/optional/x"), Owner::User);
         assert_eq!(owner_of("/nonexistent-home/.local/bin/x"), Owner::User);
     }
 }
