@@ -197,7 +197,9 @@ jobs:
   # SHA256SUMS is rewritten once.
   others-publish:
     needs: [release, others]
-    if: ${{ !cancelled() && needs.release.result == 'success' }}
+    # A failed binary uploads nothing: publishing here would only add to a draft
+    # that looks ready. A run by hand with the tag fills the gap instead.
+    if: ${{ !cancelled() && needs.release.result == 'success' && needs.others.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -242,10 +244,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          COMPLETE: ${{ needs.others.result == 'success' }}
-        run: |
-          if [ "$COMPLETE" != true ]; then
-            echo "::error::release $TAG is not published by this run: a binary is missing. Fix its build, then run this workflow by hand with the tag"
-            exit 1
-          fi
-          gh release edit "$TAG" --draft=false
+        run: gh release edit "$TAG" --draft=false
