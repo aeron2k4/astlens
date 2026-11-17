@@ -246,7 +246,7 @@ fn touched(parsed: &ParsedFile, source: &str, ranges: &[(usize, usize)]) -> (Vec
     let mut hit = vec![false; parsed.symbols.len()];
     let mut other = 0;
     for &(start, count) in ranges {
-        for line in start..start + count {
+        for line in start..start.saturating_add(count) {
             if lines
                 .get(line.wrapping_sub(1))
                 .is_none_or(|l| insignificant(l))
