@@ -2,12 +2,14 @@
 
 use std::fs;
 use std::io::{self, Write as _};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
+use sha2::{Digest, Sha256};
 
 use crate::atomic::{create_private, sync_dir};
+use crate::install;
 
 /// The release asset for this OS and CPU, or `None` where the release holds
 /// none. The names are the ones `scripts/install.sh` downloads.
@@ -61,6 +63,11 @@ fn is_newer(tag: &str, current: &str) -> bool {
     }
 }
 
+/// A tag without its `v`, as the messages spell a version.
+fn version_of(tag: &str) -> &str {
+    tag.strip_prefix('v').unwrap_or(tag)
+}
+
 /// The hash `SHA256SUMS` gives the asset, from its second field: a binary
 /// prefix `*` marks the line as binary mode, as `sha256sum -b` writes it.
 fn expected_hash(sums: &str, asset: &str) -> Option<String> {
@@ -81,16 +88,104 @@ fn is_sha256(hash: &str) -> bool {
 }
 
 pub fn run(check_only: bool) -> Result<()> {
-    let _ = (
-        check_only,
-        current_asset(),
-        parse_tag(""),
-        is_newer("", ""),
-        expected_hash("", ""),
-        install_download,
-        remove_stale_copies,
-    );
+    let exe = current_exe()?;
+    remove_stale_copies(&exe);
+    let current = env!("CARGO_PKG_VERSION");
+
+    let Some(asset) = current_asset() else {
+        bail!(
+            "no prebuilt binary for {} {}; build from source instead: scripts/install.sh --from-source",
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        );
+    };
+
+    // A binary cargo or a package manager owns is reported, never written:
+    // their records name a version this download would make wrong.
+    let owner = install::owner(&exe);
+    if owner != install::Owner::Script && owner != install::Owner::User {
+        let tag = latest_tag()?;
+        if !is_newer(&tag, current) {
+            println!("astlens v{current} is the latest");
+            return Ok(());
+        }
+        match owner {
+            install::Owner::Cargo => bail!(
+                "v{} is available; this binary came from cargo, so run: cargo install --force astlens",
+                version_of(&tag)
+            ),
+            _ => bail!(
+                "v{} is available; use the package manager that installed {}",
+                version_of(&tag),
+                exe.display()
+            ),
+        }
+    }
+
+    let tag = latest_tag()?;
+    if !is_newer(&tag, current) {
+        println!("astlens v{current} is the latest");
+        return Ok(());
+    }
+    if check_only {
+        println!("v{} is available (you have v{current})", version_of(&tag));
+        return Ok(());
+    }
+
+    println!("Updating v{current} -> v{}", version_of(&tag));
+    let sums = fetch(&format!("{BASE}/{tag}/SHA256SUMS"), MAX_SUMS)?;
+    let sums = String::from_utf8_lossy(&sums);
+    let expected = expected_hash(&sums, asset)
+        .with_context(|| format!("{asset} is not listed in the release's SHA256SUMS"))?;
+    let download = fetch(&format!("{BASE}/{tag}/{asset}"), MAX_BINARY)?;
+    let actual = hex(&Sha256::digest(&download));
+    if actual != expected {
+        bail!("checksum mismatch for {asset}: expected {expected}, downloaded {actual}");
+    }
+    install_download(&exe, &download)
+        .with_context(|| format!("cannot replace {}", exe.display()))?;
+    println!("Updated v{current} -> v{}", version_of(&tag));
+    install::report_other_copy(&exe);
     Ok(())
+}
+
+/// A digest as the lower-case text `SHA256SUMS` holds.
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// Where the release assets live, and the tag of the latest one.
+const BASE: &str = "https://github.com/aeron2k4/astlens/releases";
+const LATEST: &str = "https://api.github.com/repos/aeron2k4/astlens/releases/latest";
+/// A checksum file is a few hundred bytes; a binary is tens of megabytes.
+const MAX_SUMS: u64 = 64 * 1024;
+const MAX_BINARY: u64 = 256 * 1024 * 1024;
+
+/// The running binary, with symlinks resolved: the file a rename must replace.
+fn current_exe() -> Result<PathBuf> {
+    let exe = std::env::current_exe().context("cannot locate this binary")?;
+    Ok(exe.canonicalize().unwrap_or(exe))
+}
+
+fn latest_tag() -> Result<String> {
+    let reply = fetch(LATEST, MAX_SUMS)?;
+    let reply = String::from_utf8_lossy(&reply);
+    parse_tag(&reply)
+        .map(str::to_string)
+        .context("the latest release reply carries no tag_name")
+}
+
+fn fetch(url: &str, limit: u64) -> Result<Vec<u8>> {
+    let mut response = ureq::get(url)
+        .header("User-Agent", concat!("astlens/", env!("CARGO_PKG_VERSION")))
+        .call()
+        .with_context(|| format!("cannot reach {url}"))?;
+    response
+        .body_mut()
+        .with_config()
+        .limit(limit)
+        .read_to_vec()
+        .with_context(|| format!("cannot read the reply from {url}"))
 }
 
 /// Put `bytes` at `exe` through a temporary file in the same directory, so
@@ -326,6 +421,18 @@ mod tests {
         assert!(!stale.exists());
         assert!(exe.exists());
         assert!(other.exists());
+    }
+
+    #[test]
+    fn a_digest_reads_like_the_sums_file() {
+        assert_eq!(
+            hex(&Sha256::digest(b"")),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(
+            hex(&Sha256::digest(b"abc")),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
     }
 
     #[test]

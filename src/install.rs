@@ -223,7 +223,7 @@ pub fn install(enforce: bool, client: Client) -> Result<()> {
         _ => "Start a new OpenCode session",
     };
     log(format_args!("Done. {next}, then check the MCP server list"));
-    report_other_copy(&current_exe()?, &paths);
+    report_other_copy(&current_exe()?);
     Ok(())
 }
 
@@ -354,7 +354,7 @@ pub fn uninstall() -> Result<()> {
     remove_files(&paths)?;
     let exe = current_exe()?;
     remove_binary(&exe, &paths);
-    report_other_copy(&exe, &paths);
+    report_other_copy(&exe);
     log("Done. Restart Claude Code and open a new shell.");
     Ok(())
 }
@@ -614,8 +614,8 @@ fn remove_opencode_enforcement(paths: &Paths) -> Result<()> {
     strip_block_in_file(&paths.opencode_memory, MEMORY_BEGIN, MEMORY_END)
 }
 
-#[derive(Debug, PartialEq, Eq)]
-enum Owner {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Owner {
     /// Installed by `scripts/install.sh`, into its own directory.
     Script,
     /// Installed by `cargo install`.
@@ -624,10 +624,12 @@ enum Owner {
     User,
 }
 
-/// Who should replace or remove this binary. Writing over a cargo or package
-/// manager file by hand would leave that tool's records wrong.
-fn owner(exe: &Path, paths: &Paths) -> Owner {
+/// Who should replace or remove this binary, given the directories it could
+/// have come from. Writing over a cargo or package manager file by hand would
+/// leave that tool's records wrong.
+fn owner_in(exe: &Path, paths: &Paths) -> Owner {
     let canonical = |dir: &Path| dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    let exe = exe.canonicalize().unwrap_or_else(|_| exe.to_path_buf());
     if exe.starts_with(canonical(&paths.bin_dir)) {
         Owner::Script
     } else if exe.starts_with(canonical(&paths.cargo_bin)) {
@@ -639,9 +641,19 @@ fn owner(exe: &Path, paths: &Paths) -> Owner {
     }
 }
 
+/// [`owner_in`] for the running binary's directories, which `--update` reads
+/// from the environment. A machine without `HOME` claims nothing, and the
+/// binary counts as the user's own.
+pub fn owner(exe: &Path) -> Owner {
+    match Paths::from_env() {
+        Ok(paths) => owner_in(exe, &paths),
+        Err(_) => Owner::User,
+    }
+}
+
 fn remove_binary(exe: &Path, paths: &Paths) {
     let shown = exe.display();
-    match owner(exe, paths) {
+    match owner_in(exe, paths) {
         Owner::Script | Owner::User => match fs::remove_file(exe) {
             Ok(()) => log(format_args!("Removed {shown}")),
             // Windows refuses to delete a running executable.
@@ -662,7 +674,8 @@ fn remove_binary(exe: &Path, paths: &Paths) {
 fn other_copy(exe: &Path, paths: &Paths) -> Option<PathBuf> {
     let name = exe.file_name()?;
     let canonical = |dir: &Path| dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
-    let other = match owner(exe, paths) {
+    let exe = exe.canonicalize().unwrap_or_else(|_| exe.to_path_buf());
+    let other = match owner_in(&exe, paths) {
         Owner::Cargo => &paths.bin_dir,
         Owner::Script => &paths.cargo_bin,
         // Only these two directories hold a copy this project put there.
@@ -673,11 +686,14 @@ fn other_copy(exe: &Path, paths: &Paths) -> Option<PathBuf> {
 }
 
 /// Say where the second copy is and how to remove it, without touching it.
-fn report_other_copy(exe: &Path, paths: &Paths) {
-    let Some(other) = other_copy(exe, paths) else {
+pub fn report_other_copy(exe: &Path) {
+    let Ok(paths) = Paths::from_env() else {
         return;
     };
-    let hint = if owner(exe, paths) == Owner::Script {
+    let Some(other) = other_copy(exe, &paths) else {
+        return;
+    };
+    let hint = if owner_in(exe, &paths) == Owner::Script {
         "from an earlier 'cargo install astlens'; remove it with: cargo uninstall astlens"
     } else {
         "from an earlier scripts/install.sh run; remove it by hand"
@@ -1094,7 +1110,7 @@ mod tests {
             cargo_bin: PathBuf::from("/nonexistent-home/.cargo/bin"),
             bin_dir: PathBuf::from("/nonexistent-home/.local/bin"),
         };
-        let owner_of = |exe: &str| owner(Path::new(exe), &paths);
+        let owner_of = |exe: &str| owner_in(Path::new(exe), &paths);
         assert_eq!(owner_of("/nonexistent-home/.cargo/bin/x"), Owner::Cargo);
         assert_eq!(owner_of("/nonexistent-home/.local/bin/x"), Owner::Script);
         assert_eq!(owner_of("/usr/bin/x"), Owner::PackageManager);
