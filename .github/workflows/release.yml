@@ -225,8 +225,10 @@ jobs:
           for path in "${assets[@]}"; do
             asset=${path#dist/}
             gh release upload "$TAG" "$path" --clobber
-            grep -v "  $asset\$" SHA256SUMS > sums.new || true
-            echo "$(sha256sum "$path" | cut -d' ' -f1)  $asset" >> sums.new
+            # By field, not by a regex built from the name, which would need
+            # escaping and would still match a shorter name's prefix.
+            awk -v a="$asset" '$2 != a' SHA256SUMS > sums.new
+            printf '%s  %s\n' "$(sha256sum "$path" | cut -d' ' -f1)" "$asset" >> sums.new
             mv sums.new SHA256SUMS
           done
           gh release upload "$TAG" SHA256SUMS --clobber
