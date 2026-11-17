@@ -32,6 +32,10 @@ END='# astlens:end'
 
 log() { printf '==> %s\n' "$*" >&2; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+# Print the comment block at the top of file $1, without the `#`.
+help() {
+  awk 'NR > 1 && !/^#/ { exit } NR > 1 { print }' "$1" 2>/dev/null | sed 's/^# \{0,1\}//' || true
+}
 have() { command -v "$1" >/dev/null 2>&1; }
 need() { have "$1" || die "'$1' not found in PATH${2:+ ($2)}"; }
 
@@ -42,7 +46,7 @@ while [ $# -gt 0 ]; do
     --from-source) source_build=1 ;;
     --version) [ $# -ge 2 ] || die "--version needs a tag, e.g. v0.1.0"; version=$2; shift ;;
     --version=*) version=${1#--version=} ;;
-    -h|--help) sed -n '2,15p' "${BASH_SOURCE[0]:-$0}" 2>/dev/null || true; exit 0 ;;
+    -h|--help) help "${BASH_SOURCE[0]:-$0}"; exit 0 ;;
     *) die "unknown option: $1" ;;
   esac
   shift
