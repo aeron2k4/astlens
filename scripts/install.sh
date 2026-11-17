@@ -20,7 +20,10 @@ REPO=aeron2k4/astlens
 REPO_DIR=
 if [ -f "${BASH_SOURCE[0]:-}" ]; then
   dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-  [ -f "$dir/Cargo.toml" ] && REPO_DIR=$dir
+  # Not `[ ... ] && ...`, whose false would be the if's own status under -e.
+  if [ -f "$dir/Cargo.toml" ]; then
+    REPO_DIR=$dir
+  fi
 fi
 BIN_DIR=${ASTLENS_BIN_DIR:-$HOME/.local/bin}
 # Must match the markers in src/install.rs.
