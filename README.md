@@ -1,7 +1,5 @@
 # astlens
 
-[![M8ven Score](https://m8ven.ai/badge/mcp/aeron2k4-code-scope-mcp-19og8q?v=f5616b9cba539014a89025a36868337b)](https://m8ven.ai/mcp/aeron2k4-code-scope-mcp-19og8q?s=readme)
-
 A small, fast MCP server in Rust for AST-aware code navigation. It uses
 tree-sitter to find symbols and trims file contents to fit a token budget, so
 AI coding agents can explore large codebases without reading whole files.
@@ -42,7 +40,7 @@ and Windows x86_64 (run it in Git Bash on Windows). First the binary, which
 needs `curl`, not `sudo`:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/aeron2k4/code-scope-mcp/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/aeron2k4/astlens/main/scripts/install.sh | bash
 ```
 
 It checks the latest release against `SHA256SUMS`, saves the binary as
@@ -50,7 +48,7 @@ It checks the latest release against `SHA256SUMS`, saves the binary as
 `PATH` if missing. To install a specific release:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/aeron2k4/code-scope-mcp/main/scripts/install.sh | bash -s -- --version v0.1.0
+curl -fsSL https://raw.githubusercontent.com/aeron2k4/astlens/main/scripts/install.sh | bash -s -- --version v0.1.0
 ```
 
 Then set up the client. This needs `jq`, and `bash` for OpenCode's guard (on
@@ -185,8 +183,8 @@ This needs Rust 1.90 or later. Use it on platforms without a prebuilt binary,
 such as Linux ARM.
 
 ```sh
-git clone https://github.com/aeron2k4/code-scope-mcp.git
-cd code-scope-mcp
+git clone https://github.com/aeron2k4/astlens.git
+cd astlens
 cargo build --release
 ./target/release/astlens --serve /path/to/project
 ```

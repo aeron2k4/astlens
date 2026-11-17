@@ -41,4 +41,4 @@ three is published, so `scripts/install.sh` never finds the latest release
 without the binary it needs. When one of those builds fails the release stays a
 draft: fix the build, then run the workflow by hand with the tag. Each binary
 has a build provenance, checked with
-`gh attestation verify astlens-linux --repo aeron2k4/code-scope-mcp`.
+`gh attestation verify astlens-linux --repo aeron2k4/astlens`.

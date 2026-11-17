@@ -49,6 +49,6 @@ notes.
 ## Contact
 
 Open an issue at
-<https://github.com/aeron2k4/code-scope-mcp/issues>, or report a security
+<https://github.com/aeron2k4/astlens/issues>, or report a security
 problem privately through the repository's Security tab, as described in
 [`SECURITY.md`](SECURITY.md).
