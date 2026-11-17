@@ -223,6 +223,7 @@ pub fn install(enforce: bool, client: Client) -> Result<()> {
         _ => "Start a new OpenCode session",
     };
     log(format_args!("Done. {next}, then check the MCP server list"));
+    report_other_copy(&current_exe()?, &paths);
     Ok(())
 }
 
@@ -351,7 +352,9 @@ pub fn uninstall() -> Result<()> {
     }
     log("Removing hooks, instruction blocks and PATH entry");
     remove_files(&paths)?;
-    remove_binary(&current_exe()?, &paths);
+    let exe = current_exe()?;
+    remove_binary(&exe, &paths);
+    report_other_copy(&exe, &paths);
     log("Done. Restart Claude Code and open a new shell.");
     Ok(())
 }
@@ -651,6 +654,35 @@ fn remove_binary(exe: &Path, paths: &Paths) {
             "Not removing {shown}; use the package manager that installed it"
         )),
     }
+}
+
+/// The other copy of the binary, in the place `exe` is not: cargo's directory
+/// or the script's. Two installs leave two files, and only the one that runs
+/// gets updated, so the other is worth naming rather than deleting.
+fn other_copy(exe: &Path, paths: &Paths) -> Option<PathBuf> {
+    let name = exe.file_name()?;
+    let canonical = |dir: &Path| dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    let other = match owner(exe, paths) {
+        Owner::Cargo => &paths.bin_dir,
+        Owner::Script => &paths.cargo_bin,
+        // Only these two directories hold a copy this project put there.
+        Owner::PackageManager | Owner::User => return None,
+    };
+    let candidate = canonical(other).join(name);
+    (candidate != exe && candidate.is_file()).then_some(candidate)
+}
+
+/// Say where the second copy is and how to remove it, without touching it.
+fn report_other_copy(exe: &Path, paths: &Paths) {
+    let Some(other) = other_copy(exe, paths) else {
+        return;
+    };
+    let hint = if owner(exe, paths) == Owner::Script {
+        "from an earlier 'cargo install astlens'; remove it with: cargo uninstall astlens"
+    } else {
+        "from an earlier scripts/install.sh run; remove it by hand"
+    };
+    log(format_args!("Also found {} ({hint})", other.display()));
 }
 
 #[cfg(test)]
@@ -1014,6 +1046,38 @@ mod tests {
     fn remove_files_tolerates_a_clean_home() {
         let dir = tempfile::tempdir().unwrap();
         remove_files(&paths(dir.path())).unwrap();
+    }
+
+    #[test]
+    fn the_other_copy_is_named_only_where_this_project_puts_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        let name = if cfg!(windows) {
+            "astlens.exe"
+        } else {
+            "astlens"
+        };
+        let script = paths.bin_dir.join(name);
+        let cargo = paths.cargo_bin.join(name);
+        fs::create_dir_all(&paths.bin_dir).unwrap();
+        fs::create_dir_all(&paths.cargo_bin).unwrap();
+        let canonical = |path: &Path| path.canonicalize().unwrap();
+
+        // Neither copy exists yet.
+        assert_eq!(other_copy(&script, &paths), None);
+
+        fs::write(&cargo, "").unwrap();
+        assert_eq!(other_copy(&script, &paths), Some(canonical(&cargo)));
+
+        // The copy that runs is never the answer.
+        fs::write(&script, "").unwrap();
+        assert_eq!(other_copy(&script, &paths), Some(canonical(&cargo)));
+        assert_eq!(other_copy(&cargo, &paths), Some(canonical(&script)));
+
+        // Outside both directories, a file there belongs to nobody.
+        let stray = dir.path().join(name);
+        fs::write(&stray, "").unwrap();
+        assert_eq!(other_copy(&stray, &paths), None);
     }
 
     #[test]
