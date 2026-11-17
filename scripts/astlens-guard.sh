@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PreToolUse guard installed by astlens (`astlens --install`), so
+# PreToolUse guard installed by astlens (`astlens install`), so
 # Claude uses the astlens MCP tools for source code:
 # - Read: deny whole-file reads of source files inside the working directory.
 #   Files elsewhere, such as dependency sources, can be read. A Read with a limit of at

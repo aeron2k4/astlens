@@ -1,4 +1,4 @@
-// OpenCode guard installed by astlens (`astlens --install`), so the model uses
+// OpenCode guard installed by astlens (`astlens install`), so the model uses
 // the astlens MCP tools for source code. It maps OpenCode's read/grep/shell
 // tools onto the shared astlens-guard.sh and turns a deny into a failed call.
 import { spawn } from "node:child_process"

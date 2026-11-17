@@ -25,7 +25,7 @@ use anyhow::Result;
 use astlens::cli::{self, Command};
 use astlens::index::cache::PersistentStore;
 use astlens::mcp::{AstLens, Workspace};
-use astlens::{install, libraries, update};
+use astlens::{doctor, install, libraries, update};
 use rmcp::ServiceExt;
 use tracing_subscriber::EnvFilter;
 
@@ -118,6 +118,7 @@ fn main() -> Result<()> {
         Command::Uninstall => install::uninstall()?,
         Command::Serve(root) => serve(root)?,
         Command::Update { check_only } => update::run(check_only)?,
+        Command::Doctor => doctor::run()?,
     }
     Ok(())
 }

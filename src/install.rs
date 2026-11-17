@@ -1,4 +1,4 @@
-//! `--install` and `--uninstall`: set this binary up in Claude Code and
+//! `install` and `uninstall`: set this binary up in Claude Code and
 //! OpenCode at user scope.
 //!
 //! Install registers the MCP server, writes the guard hook or plugin and adds a
@@ -315,7 +315,8 @@ fn register(config: &str, mut run: impl FnMut(&[&str]) -> io::Result<Output>) ->
     if !removed.status.success() {
         bail!("'claude mcp add-json' failed: {}", stderr(&first));
     }
-    let lost = "the earlier registration is already removed; fix this and run --install again";
+    let lost =
+        "the earlier registration is already removed; fix this and run `astlens install` again";
     let second = run(&add).with_context(|| format!("cannot run 'claude mcp add-json'; {lost}"))?;
     if !second.status.success() {
         bail!("'claude mcp add-json' failed: {}; {lost}", stderr(&second));
@@ -567,7 +568,7 @@ fn remove_files(paths: &Paths) -> Result<()> {
     Ok(())
 }
 
-/// What `--install` adds and `--install --no-enforce` does not: the hook, its
+/// What `install` adds and `install --no-enforce` does not: the hook, its
 /// entry in the settings and the CLAUDE.md block.
 fn remove_enforcement(paths: &Paths) -> Result<()> {
     if let Some(mut settings) = read_settings(&paths.claude_settings)? {
@@ -641,7 +642,7 @@ fn owner_in(exe: &Path, paths: &Paths) -> Owner {
     }
 }
 
-/// [`owner_in`] for the running binary's directories, which `--update` reads
+/// [`owner_in`] for the running binary's directories, which `update` reads
 /// from the environment. A machine without `HOME` claims nothing, and the
 /// binary counts as the user's own.
 pub fn owner(exe: &Path) -> Owner {
@@ -683,6 +684,13 @@ fn other_copy(exe: &Path, paths: &Paths) -> Option<PathBuf> {
     };
     let candidate = canonical(other).join(name);
     (candidate != exe && candidate.is_file()).then_some(candidate)
+}
+
+/// [`other_copy`] for the running binary's directories, for `doctor` to name
+/// the file that `update` and `uninstall` leave alone.
+pub(crate) fn other_copy_of(exe: &Path) -> Option<PathBuf> {
+    let paths = Paths::from_env().ok()?;
+    other_copy(exe, &paths)
 }
 
 /// Say where the second copy is and how to remove it, without touching it.
@@ -786,7 +794,7 @@ mod tests {
         assert_eq!(seen, ["add-json", "remove", "add-json"]);
         let message = result.unwrap_err().to_string();
         assert!(message.contains("error 3"), "{message}");
-        assert!(message.contains("run --install again"), "{message}");
+        assert!(message.contains("run `astlens install` again"), "{message}");
     }
 
     #[test]

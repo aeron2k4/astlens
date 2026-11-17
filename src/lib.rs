@@ -3,6 +3,7 @@
 pub mod ast;
 pub mod atomic;
 pub mod cli;
+pub mod doctor;
 pub mod git;
 pub mod index;
 pub mod install;

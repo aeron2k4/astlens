@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install the astlens binary. Downloads it with curl on Linux x86_64, macOS
 # (Apple silicon and Intel) and Windows x86_64 (in Git Bash); elsewhere builds
-# it with cargo. Afterwards, `astlens --install` sets up Claude Code and/or
+# it with cargo. Afterwards, `astlens install` sets up Claude Code and/or
 # OpenCode.
 #
 #   scripts/install.sh                   download the latest release
@@ -12,7 +12,7 @@
 #
 # The binary goes to ~/.local/bin (ASTLENS_BIN_DIR to change), no sudo needed.
 # A marked block in the rc file of $SHELL adds that directory to PATH if missing.
-# `astlens --uninstall` removes it.
+# `astlens uninstall` removes it.
 set -euo pipefail
 
 REPO=aeron2k4/astlens
@@ -168,4 +168,4 @@ fi
 add_to_shell "$BIN_DIR"
 
 log "Done. To set up Claude Code and/or OpenCode, or update their guard after an upgrade, run now:"
-log "  $BIN --install"
+log "  $BIN install"

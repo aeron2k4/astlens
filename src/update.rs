@@ -1,4 +1,4 @@
-//! `--update`: replace this binary with the latest GitHub release.
+//! `update`: replace this binary with the latest GitHub release.
 
 use std::fs;
 use std::io::{self, Write as _};
@@ -24,8 +24,9 @@ fn asset_name(os: &str, arch: &str) -> Option<&'static str> {
     }
 }
 
-/// The asset for the platform this binary was built for.
-fn current_asset() -> Option<&'static str> {
+/// The asset for the platform this binary was built for, for `update` to
+/// download and `doctor` to name.
+pub(crate) fn current_asset() -> Option<&'static str> {
     asset_name(std::env::consts::OS, std::env::consts::ARCH)
 }
 
