@@ -54,8 +54,33 @@ fn is_newer(tag: &str, current: &str) -> bool {
     }
 }
 
+/// The hash `SHA256SUMS` gives the asset, from its second field: a binary
+/// prefix `*` marks the line as binary mode, as `sha256sum -b` writes it.
+fn expected_hash(sums: &str, asset: &str) -> Option<String> {
+    sums.lines().find_map(|line| {
+        let mut fields = line.split_whitespace();
+        let hash = fields.next()?;
+        let same = fields.next().is_some_and(|name| {
+            let name = name.strip_prefix('*').unwrap_or(name);
+            name == asset
+        });
+        (same && is_sha256(hash)).then(|| hash.to_ascii_lowercase())
+    })
+}
+
+/// 64 hexadecimal digits, the length a SHA-256 hash has.
+fn is_sha256(hash: &str) -> bool {
+    hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 pub fn run(check_only: bool) -> Result<()> {
-    let _ = (check_only, current_asset(), parse_tag(""), is_newer("", ""));
+    let _ = (
+        check_only,
+        current_asset(),
+        parse_tag(""),
+        is_newer("", ""),
+        expected_hash("", ""),
+    );
     Ok(())
 }
 
@@ -122,6 +147,37 @@ mod tests {
         // Nothing to compare against: never claims a newer version.
         assert!(!is_newer("garbage", "0.6.3"));
         assert!(!is_newer("v0.7.0", "garbage"));
+    }
+
+    #[test]
+    fn the_sums_name_the_hash_of_one_asset() {
+        let sums = concat!(
+            "1111111111111111111111111111111111111111111111111111111111111111  astlens-macos\n",
+            "2222222222222222222222222222222222222222222222222222222222222222  astlens-linux\n",
+            "3333333333333333333333333333333333333333333333333333333333333333 *astlens-windows.exe\n",
+        );
+        assert_eq!(
+            expected_hash(sums, "astlens-linux").as_deref(),
+            Some("2222222222222222222222222222222222222222222222222222222222222222")
+        );
+        // The `*` of binary mode is not part of the name.
+        assert_eq!(
+            expected_hash(sums, "astlens-windows.exe").as_deref(),
+            Some("3333333333333333333333333333333333333333333333333333333333333333")
+        );
+        assert_eq!(expected_hash(sums, "astlens-freebsd"), None);
+    }
+
+    #[test]
+    fn a_sums_line_that_is_not_a_hash_is_no_answer() {
+        let short = "abc  astlens-linux";
+        assert_eq!(expected_hash(short, "astlens-linux"), None);
+        let not_hex = format!("{}  astlens-linux", "z".repeat(64));
+        assert_eq!(expected_hash(&not_hex, "astlens-linux"), None);
+        // Upper case is the same hash.
+        let upper = format!("{}  astlens-linux", "A".repeat(64));
+        assert_eq!(expected_hash(&upper, "astlens-linux"), Some("a".repeat(64)));
+        assert_eq!(expected_hash("", "astlens-linux"), None);
     }
 
     #[test]
