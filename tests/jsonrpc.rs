@@ -42,7 +42,11 @@ impl Client {
 }
 
 fn tool_text(resp: &Value) -> &str {
-    resp["result"]["content"][0]["text"].as_str().unwrap()
+    // The whole answer names what was wrong: a bare `unwrap` on it says only
+    // that a field was missing.
+    resp["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no tool text in {resp}"))
 }
 
 #[tokio::test]
