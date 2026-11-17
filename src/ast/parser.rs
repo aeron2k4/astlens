@@ -742,14 +742,15 @@ pub fn identifier_occurrences(parsed: &ParsedFile, source: &str, name: &str) -> 
         if !whole_token {
             continue;
         }
-        // Idents are ascending, so line numbers are counted incrementally.
+        // Idents are ascending, so line numbers are counted incrementally:
+        // carry on from the end of the previous match, not its start.
         for (i, b) in source.as_bytes()[counted..start].iter().enumerate() {
             if *b == b'\n' {
                 line += 1;
                 line_start = counted + i + 1;
             }
         }
-        counted = start;
+        counted = (start + name.len()).min(source.len());
         out.push(Occurrence {
             line,
             column: start - line_start,
