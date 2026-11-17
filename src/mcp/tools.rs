@@ -41,6 +41,10 @@ const MAX_SYMBOL_MATCHES: usize = 5;
 const MAX_READ_LINES: usize = 400;
 /// Most context lines `search_text` shows on each side of a match.
 const MAX_CONTEXT_LINES: usize = 20;
+/// Most hits any one call returns, whatever limit the client asks for.
+const MAX_HIT_LIMIT: usize = 5000;
+/// Most files one `list_files` call returns.
+const MAX_LIST_LIMIT: usize = 20000;
 /// Says what an empty result of a symbol search did not cover.
 const UNSEARCHED_NOTE: &str = "… not searched: hidden files, non-UTF-8 files, files over 2 MB\n";
 
@@ -201,7 +205,7 @@ impl Workspace {
     pub fn search(&self, query: &str, kind: Option<SymbolKind>, limit: usize) -> String {
         let opts = SearchOptions {
             kind,
-            limit,
+            limit: limit.min(MAX_HIT_LIMIT),
             max_files: self.max_files,
         };
         let hits = index::search_symbols(&self.root, &self.cache, query, &opts);
@@ -804,6 +808,7 @@ impl Workspace {
             max_files: self.max_files,
         };
         let hits = refs::find_references(&self.root, &base, &self.cache, name, &opts);
+        let limit = limit.min(MAX_HIT_LIMIT);
         let note = self.truncation_note(hits.truncated);
         if hits.is_empty() {
             return Ok(format!(
@@ -885,7 +890,7 @@ impl Workspace {
             .with_context(|| format!("invalid pattern {pattern:?}"))?;
         let opts = TextOptions {
             max_files: self.max_files,
-            limit,
+            limit: limit.min(MAX_HIT_LIMIT),
             context: context.min(MAX_CONTEXT_LINES),
         };
         let found = text::search_text(&self.root, &base, &self.cache, &re, &opts);
@@ -927,6 +932,7 @@ impl Workspace {
     }
 
     pub fn list_files(&self, dir: Option<&str>, limit: usize) -> Result<String> {
+        let limit = limit.min(MAX_LIST_LIMIT);
         let base = self.root.join(self.resolve_dir(dir)?);
         if base.is_file() {
             return Ok(format!("{}\n", self.display(&base)));
