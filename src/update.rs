@@ -1,6 +1,13 @@
 //! `--update`: replace this binary with the latest GitHub release.
 
+use std::fs;
+use std::io::{self, Write as _};
+use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use anyhow::Result;
+
+use crate::atomic::{create_private, sync_dir};
 
 /// The release asset for this OS and CPU, or `None` where the release holds
 /// none. The names are the ones `scripts/install.sh` downloads.
@@ -80,8 +87,83 @@ pub fn run(check_only: bool) -> Result<()> {
         parse_tag(""),
         is_newer("", ""),
         expected_hash("", ""),
+        install_download,
+        remove_stale_copies,
     );
     Ok(())
+}
+
+/// Put `bytes` at `exe` through a temporary file in the same directory, so
+/// an interrupted write never leaves a half-written binary where the old one
+/// worked. A binary the user cannot write is refused before anything is
+/// written, and the rename gives the new file the old one's permissions.
+fn install_download(exe: &Path, bytes: &[u8]) -> io::Result<()> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let dir = exe
+        .parent()
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let name = exe
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "not a file"))?;
+    let temporary = dir.join(format!(
+        ".{}.new-{}-{}",
+        name.to_string_lossy(),
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let written = (|| {
+        let mut file = create_private(&temporary)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(&temporary, fs::Permissions::from_mode(0o755))?;
+        }
+        replace_file(&temporary, exe)
+    })();
+    if written.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    written?;
+    sync_dir(dir);
+    Ok(())
+}
+
+/// Move `source` over `target`. Windows refuses to replace a running
+/// executable, but lets it be renamed first; the file left behind is removed
+/// on a later run.
+fn replace_file(source: &Path, target: &Path) -> io::Result<()> {
+    match fs::rename(source, target) {
+        Ok(()) => Ok(()),
+        #[cfg(windows)]
+        Err(err) => {
+            let _ = err;
+            let old = target.with_extension(format!("old-{}", std::process::id()));
+            fs::rename(target, &old)?;
+            fs::rename(source, target)
+        }
+        #[cfg(not(windows))]
+        Err(err) => Err(err),
+    }
+}
+
+/// Remove the copies `replace_file` left on Windows, whose process is gone.
+fn remove_stale_copies(exe: &Path) {
+    let (Some(dir), Some(name)) = (exe.parent(), exe.file_name()) else {
+        return;
+    };
+    let prefix = format!("{}.old-", name.to_string_lossy());
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let left = entry.file_name();
+        if left.to_string_lossy().starts_with(&prefix) {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -178,6 +260,72 @@ mod tests {
         let upper = format!("{}  astlens-linux", "A".repeat(64));
         assert_eq!(expected_hash(&upper, "astlens-linux"), Some("a".repeat(64)));
         assert_eq!(expected_hash("", "astlens-linux"), None);
+    }
+
+    #[test]
+    fn the_download_replaces_the_binary_and_keeps_its_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("astlens");
+        fs::write(&exe, b"old").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        install_download(&exe, b"new binary").unwrap();
+        assert_eq!(fs::read(&exe).unwrap(), b"new binary");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = fs::metadata(&exe).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o755);
+        }
+        // No temporary file is left next to it.
+        let left: Vec<_> = fs::read_dir(dir.path()).unwrap().flatten().collect();
+        assert_eq!(
+            left.len(),
+            1,
+            "{:?}",
+            left.iter().map(|e| e.path()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_binary_that_cannot_be_written_is_left_intact() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("astlens");
+        fs::write(&exe, b"old").unwrap();
+        // The directory refuses new files, so no temporary file can be made.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o555)).unwrap();
+            if fs::write(dir.path().join("probe"), b"").is_ok() {
+                // Running as root: the mode proves nothing.
+                let _ = fs::remove_file(dir.path().join("probe"));
+                return;
+            }
+            assert!(install_download(&exe, b"new").is_err());
+            assert_eq!(fs::read(&exe).unwrap(), b"old");
+            fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
+    #[test]
+    fn stale_copies_of_a_replaced_binary_go_on_the_next_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("astlens");
+        fs::write(&exe, b"new").unwrap();
+        let stale = dir.path().join("astlens.old-1234");
+        fs::write(&stale, b"old").unwrap();
+        let other = dir.path().join("astlens2");
+        fs::write(&other, b"kept").unwrap();
+
+        remove_stale_copies(&exe);
+        assert!(!stale.exists());
+        assert!(exe.exists());
+        assert!(other.exists());
     }
 
     #[test]

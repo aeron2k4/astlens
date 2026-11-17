@@ -76,7 +76,7 @@ pub fn write_atomic(path: &Path, contents: &str) -> io::Result<()> {
 /// Create the temporary file with its owner's mode alone. The original mode is
 /// applied once the contents are in: a file created at the process default can
 /// be readable by others for the moment before that.
-fn create_private(path: &Path) -> io::Result<fs::File> {
+pub(crate) fn create_private(path: &Path) -> io::Result<fs::File> {
     let mut options = fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -104,7 +104,7 @@ fn has_other_links(meta: &fs::Metadata) -> bool {
 /// Make the rename itself last through a power loss, where the platform lets
 /// a directory be synced. The file is already written, so a failure here is
 /// not one of the write.
-fn sync_dir(dir: &Path) {
+pub(crate) fn sync_dir(dir: &Path) {
     #[cfg(unix)]
     {
         let dir = if dir.as_os_str().is_empty() {
