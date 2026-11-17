@@ -101,7 +101,9 @@ pub fn parse(args: &[OsString], interactive: bool) -> Result<Command, String> {
             }
             Ok(Command::Install { enforce, client })
         }
-        Some(arg) if matches!(arg, "-s" | "--serve") || (arg == "serve" && !interactive) => {
+        Some("-s" | "--serve" | "serve") => {
+            // `serve` is how an older registration spelled the flag: accepted
+            // at a terminal too, with the same rest.
             match rest.as_slice() {
                 [] => Ok(Command::Serve(None)),
                 [root] => Ok(Command::Serve(Some(PathBuf::from(root)))),
@@ -182,13 +184,19 @@ mod tests {
     }
 
     #[test]
-    fn the_old_serve_command_works_only_outside_a_terminal() {
+    fn the_old_serve_command_works_at_a_terminal_too() {
         assert_eq!(run(&["serve"], false), Ok(Command::Serve(None)));
         assert_eq!(
             run(&["serve", "/p"], false),
             Ok(Command::Serve(Some("/p".into())))
         );
-        assert!(run(&["serve"], true).is_err());
+        // A word the help already shows as the flag's spelling is no typo to
+        // refuse: only a path stays unserved there.
+        assert_eq!(run(&["serve"], true), Ok(Command::Serve(None)));
+        assert_eq!(
+            run(&["serve", "/p"], true),
+            Ok(Command::Serve(Some("/p".into())))
+        );
     }
 
     #[test]
@@ -214,5 +222,6 @@ mod tests {
         assert!(run(&["--uninstall", "x"], true).is_err());
         assert!(run(&["--serve", "a", "b"], true).is_err());
         assert!(run(&["/p", "x"], false).is_err());
+        assert!(run(&["serve", "a", "b"], true).is_err());
     }
 }
