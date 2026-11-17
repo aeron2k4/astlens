@@ -410,14 +410,15 @@ fn add_hook_to_settings(paths: &Paths) -> Result<()> {
     // Quoted, so that a home directory with a space keeps working.
     add_hook(
         &mut settings,
+        &paths.claude_hook,
         &format!("\"{}\"", native_path(&paths.claude_hook)),
     )?;
     write_settings(&paths.claude_settings, &settings)
 }
 
 /// Append our entry after the existing hooks, replacing an earlier one.
-fn add_hook(settings: &mut Value, command: &str) -> Result<()> {
-    strip_hook(settings);
+fn add_hook(settings: &mut Value, hook: &Path, command: &str) -> Result<()> {
+    strip_hook(settings, hook);
     let entry = json!({
         "matcher": "Read|Grep|Bash",
         "hooks": [{"type": "command", "command": command}],
@@ -437,9 +438,10 @@ fn add_hook(settings: &mut Value, command: &str) -> Result<()> {
     Ok(())
 }
 
-/// Drop our hook, matched by file name so that any older form of the command
-/// goes too, and leave no empty containers behind. Other hooks stay as they are.
-fn strip_hook(settings: &mut Value) {
+/// Drop our hook, matched by its path so that any older form of the command
+/// goes too, and leave no empty containers behind. Other hooks stay as they
+/// are: a command that merely mentions the file name is not ours.
+fn strip_hook(settings: &mut Value, hook: &Path) {
     let Some(hooks) = settings.get_mut("hooks").and_then(Value::as_object_mut) else {
         return;
     };
@@ -451,11 +453,11 @@ fn strip_hook(settings: &mut Value) {
             return true;
         };
         let before = commands.len();
-        commands.retain(|hook| {
-            !hook
+        commands.retain(|entry| {
+            !entry
                 .get("command")
                 .and_then(Value::as_str)
-                .is_some_and(|command| command.contains(GUARD_NAME))
+                .is_some_and(|command| names_hook(command, hook))
         });
         // An entry that had no commands to begin with is not ours to remove.
         !commands.is_empty() || before == 0
@@ -468,6 +470,31 @@ fn strip_hook(settings: &mut Value) {
     {
         root.remove("hooks");
     }
+}
+
+/// Whether `command` runs the hook at `hook`. The hook file is one we own,
+/// wherever an older install put it, so any command running a file of that name
+/// is an earlier form of ours; one that only mentions the name, inside a longer
+/// argument, is not.
+fn names_hook(command: &str, hook: &Path) -> bool {
+    let name = hook
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if name.is_empty() {
+        return false;
+    }
+    let command = command.trim_matches(['"', '\'']);
+    if command == native_path(hook) {
+        return true;
+    }
+    // An older install may have moved or renamed our file, so a word of the
+    // command that ends in the file name, as a path component, is ours. A name
+    // inside a longer argument (`.../astlens-guard.sh.bak`) is not.
+    command.split_ascii_whitespace().any(|word| {
+        let word = word.trim_matches(['"', '\'']);
+        word == name || word.ends_with(&format!("/{name}"))
+    })
 }
 
 fn add_memory(path: &Path, block: &str) -> Result<()> {
@@ -537,7 +564,7 @@ fn remove_files(paths: &Paths) -> Result<()> {
 fn remove_enforcement(paths: &Paths) -> Result<()> {
     if let Some(mut settings) = read_settings(&paths.claude_settings)? {
         let before = settings.clone();
-        strip_hook(&mut settings);
+        strip_hook(&mut settings, &paths.claude_hook);
         if settings != before {
             write_settings(&paths.claude_settings, &settings)?;
         }
@@ -714,7 +741,12 @@ mod tests {
                 {"matcher": "Read|Grep", "hooks": [{"type": "command", "command": "/old/astlens-guard.sh"}]},
             ]},
         });
-        add_hook(&mut settings, "\"/new/astlens-guard.sh\"").unwrap();
+        add_hook(
+            &mut settings,
+            Path::new("/new/astlens-guard.sh"),
+            "\"/new/astlens-guard.sh\"",
+        )
+        .unwrap();
         assert_eq!(
             commands(&settings),
             ["rtk hook claude", "\"/new/astlens-guard.sh\""]
@@ -725,8 +757,13 @@ mod tests {
     #[test]
     fn stripping_the_only_hook_leaves_no_empty_containers() {
         let mut settings = json!({"model": "x"});
-        add_hook(&mut settings, "/h/astlens-guard.sh").unwrap();
-        strip_hook(&mut settings);
+        add_hook(
+            &mut settings,
+            Path::new("/h/astlens-guard.sh"),
+            "/h/astlens-guard.sh",
+        )
+        .unwrap();
+        strip_hook(&mut settings, Path::new("/h/astlens-guard.sh"));
         assert_eq!(settings, json!({"model": "x"}));
     }
 
@@ -739,15 +776,30 @@ mod tests {
             ]}],
             "Stop": [],
         }});
-        strip_hook(&mut settings);
+        strip_hook(&mut settings, Path::new("/h/astlens-guard.sh"));
         assert_eq!(commands(&settings), ["other"]);
         assert!(settings["hooks"]["Stop"].is_array());
     }
 
     #[test]
+    fn stripping_keeps_a_hook_that_only_mentions_our_file_name() {
+        let mut settings = json!({"hooks": {
+            "PreToolUse": [{"matcher": "Bash", "hooks": [
+                {"type": "command", "command": "bash -x /u/tools/astlens-guard.sh.bak"},
+                {"type": "command", "command": "/h/astlens-guard.sh"},
+            ]}],
+        }});
+        strip_hook(&mut settings, Path::new("/h/astlens-guard.sh"));
+        assert_eq!(
+            commands(&settings),
+            ["bash -x /u/tools/astlens-guard.sh.bak"]
+        );
+    }
+
+    #[test]
     fn settings_keys_keep_their_order() {
         let mut settings: Value = serde_json::from_str(r#"{"z": 1, "a": 2}"#).unwrap();
-        add_hook(&mut settings, "c").unwrap();
+        add_hook(&mut settings, Path::new("/h/astlens-guard.sh"), "c").unwrap();
         let text = settings.to_string();
         assert!(text.find("\"z\"").unwrap() < text.find("\"a\"").unwrap());
     }
