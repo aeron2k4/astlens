@@ -35,24 +35,78 @@ Full results for Go, CPython, tokio, the Linux kernel and VS Code are in
 
 ## Installation
 
-Installing takes two steps, on Linux x86_64, macOS (Apple silicon and Intel)
-and Windows x86_64 (run it in Git Bash on Windows). First the binary, which
-needs `curl`, not `sudo`:
+There are four ways to get the binary. Whichever you use, the last step is
+`astlens install`, which sets the server up in Claude Code and/or OpenCode.
+
+| Way                          | Binary lands in | Upgrade with                          |
+| ---------------------------- | --------------- | ------------------------------------- |
+| `scripts/install.sh`         | `~/.local/bin`  | `astlens update`                      |
+| `cargo install astlens`      | `~/.cargo/bin`  | `cargo install astlens`               |
+| `cargo install --git ...`    | `~/.cargo/bin`  | `cargo install --force --git ...`     |
+| `cargo install --path .`     | `~/.cargo/bin`  | `cargo install --force --path .`      |
+
+The first needs only `curl`; the three cargo ways need Rust 1.90 or later.
+Prebuilt binaries exist for Linux x86_64, macOS (Apple silicon and Intel) and
+Windows x86_64, which the script downloads; elsewhere it builds from source.
+
+### With the install script
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/aeron2k4/astlens/main/scripts/install.sh | bash
 ```
 
-It checks the latest release against `SHA256SUMS`, saves the binary as
+It checks the release against `SHA256SUMS`, saves the binary as
 `~/.local/bin/astlens` (`ASTLENS_BIN_DIR` to change) and adds that directory to
-`PATH` if missing. To install a specific release:
+`PATH` if missing, through a marked block in the rc file of `$SHELL`. On
+Windows, run it in Git Bash. It needs no `sudo`.
+
+A specific release, or a build from source instead of a download:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/aeron2k4/astlens/main/scripts/install.sh | bash -s -- --version v0.1.0
+curl -fsSL https://raw.githubusercontent.com/aeron2k4/astlens/main/scripts/install.sh | bash -s -- --version v0.7.0
+curl -fsSL https://raw.githubusercontent.com/aeron2k4/astlens/main/scripts/install.sh | bash -s -- --from-source
 ```
 
-Then set up the client. This needs `jq`, and `bash` for OpenCode's guard (on
-Windows, `winget install jqlang.jq`):
+`--from-source` needs `cargo`, and so does a platform with no prebuilt binary,
+which the script builds for on its own. A build goes to
+`~/.cargo/bin/astlens`, since cargo keeps it.
+
+### With cargo, from crates.io
+
+```sh
+cargo install astlens
+```
+
+This puts the binary in `~/.cargo/bin`, which cargo does not add to `PATH` for
+you.
+
+### With cargo, from git
+
+```sh
+cargo install --git https://github.com/aeron2k4/astlens --tag v0.7.0 --locked
+```
+
+Same destination, `~/.cargo/bin`. Without `--tag`, cargo builds the tip of
+`main`.
+
+### From a clone
+
+```sh
+git clone https://github.com/aeron2k4/astlens.git
+cd astlens
+cargo build --release
+./target/release/astlens --serve /path/to/project
+```
+
+To install that build instead of running it from `target`, use
+`cargo install --path . --locked --force`, or run `scripts/install.sh
+--from-source` inside the clone.
+
+### Set up the client
+
+Any of the above leaves an `astlens` on `PATH`. Then set up the client. This
+needs `jq`, and `bash` for OpenCode's guard (on Windows,
+`winget install jqlang.jq`):
 
 ```sh
 astlens install
@@ -77,10 +131,13 @@ leaves the old binary in place. The asset has no version in its name, so the
 command works the same whatever release is current.
 
 A binary in `~/.local/bin` (installed by `scripts/install.sh`) is replaced. A
-binary cargo installed, in `~/.cargo/bin`, is not: `update` prints the
-version and the command to run instead, `cargo install --force astlens`, so
-cargo's record of what is installed stays right. The same goes for a binary in
-`/usr` or `/opt`, which belongs to a package manager.
+binary cargo installed, in `~/.cargo/bin`, is not: `update` prints the version
+and the command to run instead, so cargo's record of what is installed stays
+right. For a crates.io install, `cargo install astlens` again is enough to move
+to a newer version; `--force` only redoes a build that has no newer version to
+fetch, such as one from `--git` or `--path`, or rebuilds the version already
+installed. A binary in `/usr` or `/opt` belongs to a package manager, and
+`update` leaves it to that.
 
 If both locations hold a copy, only the one running is updated, and the other
 is named. Remove it with `cargo uninstall astlens` (a cargo copy) or by hand (a
@@ -218,20 +275,11 @@ that write stay inside the workspace.
 
 ## Build from source
 
-This needs Rust 1.90 or later. Use it on platforms without a prebuilt binary,
-such as Linux ARM.
-
-```sh
-git clone https://github.com/aeron2k4/astlens.git
-cd astlens
-cargo build --release
-./target/release/astlens --serve /path/to/project
-```
-
-To install the build as `~/.cargo/bin/astlens` instead, run
-`scripts/install.sh --from-source`, then `astlens install`. A binary built
-that way is updated with `cargo install --force astlens`, since cargo keeps
-it; `update` says so.
+Rust 1.90 or later. This is also the way on a platform without a prebuilt
+binary, such as Linux ARM. The commands are under
+[Installation](#installation): `cargo build --release` from a clone,
+`cargo install --path .`, or `scripts/install.sh --from-source`. Run
+`astlens install` afterwards.
 
 To contribute, see [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
