@@ -80,7 +80,13 @@ fn write(path: &Path, original: Option<&str>, edited: &str) -> Result<()> {
                 .map(|extension| extension.to_string_lossy())
                 .unwrap_or_default()
         ));
-        fs::copy(path, &backup).with_context(|| format!("cannot write {}", backup.display()))?;
+        // The first edit of a session keeps the file as the user wrote it; a
+        // later one keeps that same copy rather than overwriting it with our
+        // own edit.
+        if !backup.exists() {
+            fs::copy(path, &backup)
+                .with_context(|| format!("cannot write {}", backup.display()))?;
+        }
     }
     write_atomic(path, edited).with_context(|| format!("cannot write {}", path.display()))
 }
