@@ -803,12 +803,13 @@ impl Workspace {
         limit: usize,
     ) -> Result<String> {
         let base = self.root.join(self.resolve_dir(dir)?);
+        let limit = limit.min(MAX_HIT_LIMIT);
         let opts = RefOptions {
             include_definitions,
             max_files: self.max_files,
+            limit,
         };
         let hits = refs::find_references(&self.root, &base, &self.cache, name, &opts);
-        let limit = limit.min(MAX_HIT_LIMIT);
         let note = self.truncation_note(hits.truncated);
         if hits.is_empty() {
             return Ok(format!(
@@ -816,7 +817,7 @@ impl Workspace {
             ));
         }
         let mut out = String::new();
-        for h in hits.iter().take(limit) {
+        for h in &hits.hits {
             let _ = write!(out, "{}:{}:{}: {}", h.path, h.line, h.column + 1, h.text);
             if h.is_definition {
                 out.push_str("  [definition]");
@@ -826,8 +827,8 @@ impl Workspace {
             }
             out.push('\n');
         }
-        if hits.len() > limit {
-            let _ = writeln!(out, "… {} more references", hits.len() - limit);
+        if hits.total > hits.hits.len() {
+            let _ = writeln!(out, "… {} more references", hits.total - hits.hits.len());
         }
         out.push_str(&note);
         Ok(out)

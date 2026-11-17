@@ -49,6 +49,8 @@ pub const DEFAULT_MAX_FILES: usize = 20_000;
 #[derive(Debug, Clone)]
 pub struct Found<T> {
     pub hits: Vec<T>,
+    /// Hits there were, including any beyond a caller's own limit.
+    pub total: usize,
     pub truncated: bool,
     /// Files whose symbol query ran out of time, so hits may be missing.
     pub incomplete: usize,
@@ -223,6 +225,7 @@ pub fn search_symbols(
     if query.is_empty() {
         return Found {
             hits: Vec::new(),
+            total: 0,
             truncated: false,
             incomplete: 0,
         };
@@ -317,8 +320,10 @@ pub fn search_symbols(
             end_line: sym.end_line,
         });
     }
+    let total = hits.len();
     Found {
         hits,
+        total,
         truncated,
         incomplete: incomplete.into_inner(),
     }

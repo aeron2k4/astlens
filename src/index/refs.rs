@@ -29,6 +29,8 @@ pub struct RefOptions {
     pub include_definitions: bool,
     /// Upper bound on files walked, to keep huge repositories responsive.
     pub max_files: usize,
+    /// Most hits to keep; the others are only counted.
+    pub limit: usize,
 }
 
 impl Default for RefOptions {
@@ -36,6 +38,7 @@ impl Default for RefOptions {
         RefOptions {
             include_definitions: false,
             max_files: DEFAULT_MAX_FILES,
+            limit: usize::MAX,
         }
     }
 }
@@ -194,6 +197,7 @@ pub fn find_references(
     if name.is_empty() {
         return Found {
             hits: Vec::new(),
+            total: 0,
             truncated: false,
             incomplete: 0,
         };
@@ -332,16 +336,27 @@ pub fn find_references(
         .collect();
     let calls_only =
         owner.is_some() && !target_kinds.is_empty() && target_kinds.iter().all(|k| k.is_callable());
-    let hits = candidates
+    let mut total = 0;
+    let mut kept = 0;
+    let hits: Vec<RefHit> = candidates
         .into_iter()
         .filter(|c| opts.include_definitions || c.def_kind.is_none())
         .filter(|c| {
             !calls_only || c.def_kind.is_some() || c.ownership == Ownership::Owner || c.call
         })
-        .map(|c| c.hit)
+        .filter_map(|c| {
+            total += 1;
+            if kept < opts.limit {
+                kept += 1;
+                Some(c.hit)
+            } else {
+                None
+            }
+        })
         .collect();
     Found {
         hits,
+        total,
         truncated,
         incomplete: 0,
     }

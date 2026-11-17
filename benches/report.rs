@@ -172,6 +172,7 @@ fn bench_corpus(name: &str, root: &Path) -> CorpusReport {
     let ref_opts = RefOptions {
         include_definitions: true,
         max_files: MAX_FILES,
+        ..Default::default()
     };
     let text_opts = TextOptions {
         max_files: MAX_FILES,
