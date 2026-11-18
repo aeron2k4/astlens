@@ -27,6 +27,16 @@ pub fn run() -> Result<()> {
         Some(other) => println!("other copy: {} ({})", other.display(), other_hint(owner)),
         None => println!("other copy: none"),
     }
+    let clients = install::configured_clients();
+    if clients.is_empty() {
+        println!("clients: none detected in config files");
+    } else {
+        let summary: Vec<String> = clients
+            .into_iter()
+            .map(|(name, mode)| format!("{name} ({mode})"))
+            .collect();
+        println!("clients: {}", summary.join(", "));
+    }
 
     let Some(asset) = update::current_asset() else {
         println!("release asset: none for this platform");

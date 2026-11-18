@@ -10,9 +10,10 @@ Usage: astlens <COMMAND | OPTION>
 
 Commands:
   install [--no-enforce] [--client CLIENT]
-                                Set up Claude Code and/or OpenCode: MCP server,
-                                plus hook/plugin and instructions when enforcing.
-                                CLIENT is claude, opencode or all (the default).
+                                Set up Claude Code, OpenCode and/or Antigravity:
+                                MCP server, plus hook/plugin and instructions when
+                                enforcing. CLIENT is claude, opencode, antigravity
+                                or all (the default).
                                 --no-enforce registers the MCP server only
   uninstall                     Undo install, remove the PATH entry and this binary
   update [--check]              Download the latest release over this binary, from
@@ -33,6 +34,7 @@ Options:
 pub enum Client {
     Claude,
     Opencode,
+    Antigravity,
     All,
 }
 
@@ -41,9 +43,10 @@ impl Client {
         match value {
             "claude" => Ok(Self::Claude),
             "opencode" => Ok(Self::Opencode),
+            "antigravity" | "agy" => Ok(Self::Antigravity),
             "all" => Ok(Self::All),
             _ => Err(format!(
-                "unknown client: {value} (expected claude, opencode or all)"
+                "unknown client: {value} (expected claude, opencode, antigravity or all)"
             )),
         }
     }
@@ -206,6 +209,20 @@ mod tests {
                 Ok(Command::Install {
                     enforce: false,
                     client: Client::Claude
+                })
+            );
+            assert_eq!(
+                run(&["install", "--client", "antigravity"], interactive),
+                Ok(Command::Install {
+                    enforce: true,
+                    client: Client::Antigravity
+                })
+            );
+            assert_eq!(
+                run(&["install", "--client=agy", "--no-enforce"], interactive),
+                Ok(Command::Install {
+                    enforce: false,
+                    client: Client::Antigravity
                 })
             );
             assert_eq!(run(&["uninstall"], interactive), Ok(Command::Uninstall));

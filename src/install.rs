@@ -1,5 +1,5 @@
-//! `install` and `uninstall`: set this binary up in Claude Code and
-//! OpenCode at user scope.
+//! `install` and `uninstall`: set this binary up in Claude Code, OpenCode
+//! and Antigravity at user scope.
 //!
 //! Install registers the MCP server, writes the guard hook or plugin and adds a
 //! short instruction block to `CLAUDE.md` or `AGENTS.md`. Uninstall undoes
@@ -24,6 +24,88 @@ const GUARD: &str = include_str!("../scripts/astlens-guard.sh");
 const GUARD_NAME: &str = "astlens-guard.sh";
 const OPENCODE_PLUGIN: &str = include_str!("../scripts/opencode-guard.ts");
 const OPENCODE_PLUGIN_NAME: &str = "index.ts";
+const AGY_BRIDGE: &str = include_str!("../scripts/agy-mcp-bridge.py");
+const AGY_BRIDGE_NAME: &str = "agy-mcp-bridge.py";
+const AGY_GUARD: &str = include_str!("../scripts/agy-guard.py");
+const AGY_GUARD_NAME: &str = "agy-guard.py";
+
+const AGY_LOGO_SVG: &str = "\
+<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 128 128\" width=\"128\" height=\"128\">
+  <rect x=\"14\" y=\"14\" width=\"100\" height=\"100\" rx=\"22\" fill=\"#111827\" stroke=\"#38bdf8\" stroke-width=\"6\"/>
+  <circle cx=\"58\" cy=\"56\" r=\"22\" fill=\"none\" stroke=\"#38bdf8\" stroke-width=\"7\"/>
+  <line x1=\"74\" y1=\"72\" x2=\"94\" y2=\"92\" stroke=\"#38bdf8\" stroke-width=\"8\" stroke-linecap=\"round\"/>
+  <path d=\"M50 50 L43 56 L50 62 M66 50 L73 56 L66 62\" fill=\"none\" stroke=\"#f8fafc\" stroke-width=\"5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>
+</svg>
+";
+
+const AGY_AGENTS_MD: &str = "\
+# Code navigation (astlens)
+
+When exploring, reading, or editing source code inside the workspace, prefer the `astlens` MCP server tools (`call_mcp_tool` with `ServerName: \"astlens\"`, reading `<appDataDir>/mcp/astlens/<tool>.json` once when needed) over `read_file` and `grep`/`rg`:
+
+- `codebase_map`: first look at an unfamiliar codebase or directory; ranks the symbols other files rely on most (`focus` ranks around task files).
+- `get_file_outline`: list a file's symbols and line ranges before opening it; `search_symbols` to find a definition by name.
+- `read_symbol`: read one or several functions, structs, or classes from a file (`name` or `names`) instead of the whole file; `read_lines` for a specific line range (compiler error, search hit).
+- `replace_symbol` / `insert_symbol`: rewrite, delete, or add a whole symbol without a prior `read_file`.
+- `replace_text` / `replace_lines`: exact snippet or line-range edits with tree-sitter syntax validation; do not edit code with python/perl/sed scripts.
+- `read_file_pruned`: read a large file within a token budget (`keep` preserves named symbols).
+- `find_references`: AST token references skipping comments and strings; `search_text` instead of `grep`/`rg` (`.gitignore`-aware, reports enclosing symbol).
+- `changed_symbols` and `git_status`: symbol-level git diff and working tree status.
+- Read tools also accept absolute paths to external dependency sources (`~/.cargo/registry/src`, `~/.rustup/toolchains`, `/usr/include`).
+
+Use `read_file`, `edit_file`, or shell search for non-code files, paths outside the workspace, bounded line ranges (`StartLine` + `EndLine` <= 300 lines), or when `astlens` reports an unsupported file type.
+";
+
+fn agy_plugin_json() -> Result<String> {
+    let manifest = json!({
+        "name": SERVER,
+        "displayName": "astlens — AST Code Navigation",
+        "version": env!("CARGO_PKG_VERSION"),
+        "description": "Tree-sitter MCP code navigation, PageRank codebase maps, symbol-level edits, and PreToolUse source-read guard for Antigravity.",
+        "logo": "assets/logo.svg",
+        "homepage": env!("CARGO_PKG_HOMEPAGE"),
+        "repository": env!("CARGO_PKG_REPOSITORY"),
+        "suggestedPrompts": [
+            "Use codebase_map to summarize the core modules of this repository",
+            "Find all call sites of this symbol with find_references and read it via read_symbol",
+            "Inspect modified definitions with changed_symbols before reviewing the diff"
+        ]
+    });
+    let mut text = serde_json::to_string_pretty(&manifest)?;
+    text.push('\n');
+    Ok(text)
+}
+
+fn agy_hooks_json(python: &str) -> Result<String> {
+    let cmd = format!("{python} ./hooks/{AGY_GUARD_NAME}");
+    let entry = |matcher: &str, timeout: u64| {
+        json!({
+            "matcher": matcher,
+            "hooks": [{
+                "type": "command",
+                "command": &cmd,
+                "timeout": timeout,
+            }],
+        })
+    };
+    let hooks = json!({
+        "astlens-guard": {
+            "enabled": true,
+            "SessionStart": [{ "type": "command", "command": &cmd, "timeout": 5 }],
+            "PreInvocation": [{ "type": "command", "command": &cmd, "timeout": 5 }],
+            "PreToolUse": [
+                entry("call_mcp_tool", 5),
+                entry("read_file", 10),
+                entry("view_file", 10),
+                entry("grep_search", 10),
+                entry("run_command", 10),
+            ],
+        }
+    });
+    let mut text = serde_json::to_string_pretty(&hooks)?;
+    text.push('\n');
+    Ok(text)
+}
 
 const MEMORY_BEGIN: &str = "<!-- astlens:begin -->";
 const MEMORY_END: &str = "<!-- astlens:end -->";
@@ -32,7 +114,7 @@ const MEMORY_TEXT: &str = "\
 When exploring or reading source code, prefer the astlens MCP tools over Read/Grep:
 - `codebase_map` for a first look at an unfamiliar codebase or directory: the symbols the rest of the code uses most; `focus` ranks around the task's files.
 - `get_file_outline` before opening a file; `search_symbols` to find a definition.
-- `read_symbol` to read one function/class instead of the whole file; `read_lines` for a range of lines (a compiler error, a search hit).
+- `read_symbol` to read one function/class (or pass `names` for several from one file) instead of the whole file; `read_lines` for a range of lines (a compiler error, a search hit).
 - `replace_symbol` to rewrite or delete a whole function/class, `insert_symbol` to add one; no Read needed.
 - `replace_text` for any other change (an import, a few lines, several spots in one file): exact old text, which must occur once, and its replacement; no Read needed. `replace_lines` to replace a line range, passing the lines as they are now. Do not edit code with a python/perl/sed script.
 - `read_file_pruned` when a whole file is needed but may be large.
@@ -48,7 +130,7 @@ const OPENCODE_MEMORY_TEXT: &str = "\
 When exploring or reading source code, prefer the astlens MCP tools over read/grep:
 - `astlens_codebase_map` for a first look at an unfamiliar codebase or directory: the symbols the rest of the code uses most; `focus` ranks around the task's files.
 - `astlens_get_file_outline` before opening a file; `astlens_search_symbols` to find a definition.
-- `astlens_read_symbol` to read one function/class instead of the whole file; `astlens_read_lines` for a range of lines (a compiler error, a search hit).
+- `astlens_read_symbol` to read one function/class (or pass `names` for several from one file) instead of the whole file; `astlens_read_lines` for a range of lines (a compiler error, a search hit).
 - `astlens_replace_symbol` to rewrite or delete a whole function/class, `astlens_insert_symbol` to add one; no read needed.
 - `astlens_replace_text` for any other change (an import, a few lines, several spots in one file): exact old text, which must occur once, and its replacement; no read needed. `astlens_replace_lines` to replace a line range, passing the lines as they are now. Do not edit code with a python/perl/sed script.
 - `astlens_read_file_pruned` when a whole file is needed but may be large.
@@ -73,9 +155,15 @@ struct Paths {
     claude_hook: PathBuf,
     claude_settings: PathBuf,
     claude_memory: PathBuf,
+    claude_mcp: PathBuf,
     opencode_memory: PathBuf,
     opencode_plugin: PathBuf,
     opencode_guard: PathBuf,
+    agy_app_dir: PathBuf,
+    agy_config_dir: PathBuf,
+    agy_mcp_config: PathBuf,
+    agy_bridge: PathBuf,
+    agy_plugin_dir: PathBuf,
     rc_files: Vec<PathBuf>,
     /// Where `cargo install` puts a binary, `~/.cargo/bin`.
     cargo_bin: PathBuf,
@@ -96,14 +184,22 @@ impl Paths {
         let config = var("XDG_CONFIG_HOME").unwrap_or_else(|| home.join(".config"));
         let opencode = config.join("opencode");
         let plugin = opencode.join("plugins").join("astlens-guard");
+        let gemini = var("GEMINI_CONFIG_DIR").unwrap_or_else(|| home.join(".gemini"));
+        let agy_config = gemini.join("config");
         Ok(Self {
             config_dir: opencode.clone(),
             claude_hook: claude.join("hooks").join(GUARD_NAME),
             claude_settings: claude.join("settings.json"),
             claude_memory: claude.join("CLAUDE.md"),
+            claude_mcp: home.join(".claude.json"),
             opencode_memory: opencode.join("AGENTS.md"),
             opencode_plugin: plugin.join(OPENCODE_PLUGIN_NAME),
             opencode_guard: plugin.join(GUARD_NAME),
+            agy_app_dir: gemini.join("antigravity"),
+            agy_config_dir: agy_config.clone(),
+            agy_mcp_config: agy_config.join("mcp_config.json"),
+            agy_bridge: agy_config.join("astlens").join(AGY_BRIDGE_NAME),
+            agy_plugin_dir: agy_config.join("plugins").join(SERVER),
             rc_files: vec![
                 home.join(".bashrc"),
                 home.join(".bash_profile"),
@@ -171,30 +267,59 @@ fn opencode_available(paths: &Paths) -> bool {
     runs("opencode") || paths.config_dir.exists()
 }
 
+fn antigravity_available(paths: &Paths) -> bool {
+    runs("agy") || paths.agy_app_dir.exists() || paths.agy_config_dir.exists()
+}
+
+fn python_program() -> Option<&'static str> {
+    if runs("python3") {
+        Some("python3")
+    } else if cfg!(windows) && runs("python") {
+        Some("python")
+    } else {
+        None
+    }
+}
+
 pub fn install(enforce: bool, client: Client) -> Result<()> {
     let paths = Paths::from_env()?;
-    let (claude_target, opencode_target) = match client {
+    let (claude_target, opencode_target, agy_target) = match client {
         Client::Claude => {
             if !claude_available() {
                 bail!("cannot run 'claude'; install Claude Code first");
             }
-            (true, false)
+            (true, false, false)
         }
-        Client::Opencode => (false, true),
+        Client::Opencode => (false, true, false),
+        Client::Antigravity => (false, false, true),
         Client::All => {
             let claude_target = claude_available();
             let opencode_target = opencode_available(&paths);
-            if !claude_target && !opencode_target {
-                bail!("neither Claude Code nor OpenCode was found; install one first");
+            let agy_target = antigravity_available(&paths);
+            if !claude_target && !opencode_target && !agy_target {
+                bail!(
+                    "no supported client (Claude Code, OpenCode or Antigravity) was found; \
+                     install one first"
+                );
             }
-            (claude_target, opencode_target)
+            (claude_target, opencode_target, agy_target)
         }
     };
 
     // Checked once, before anything is written, so a missing tool never
-    // leaves one client set up and the other not.
+    // leaves one client set up and another not.
+    let python = if agy_target {
+        Some(python_program().ok_or_else(|| {
+            anyhow!(
+                "'python3' not found, and Antigravity integration needs it; install Python 3 first"
+            )
+        })?)
+    } else {
+        None
+    };
+
     if enforce {
-        let guard = match (claude_target, opencode_target) {
+        let guard = match (claude_target, opencode_target || agy_target) {
             (true, true) => "the hook and the guard plugin need",
             (true, false) => "the hook needs",
             _ => "the guard plugin needs",
@@ -217,12 +342,29 @@ pub fn install(enforce: bool, client: Client) -> Result<()> {
     if opencode_target {
         install_opencode(&paths, enforce)?;
     }
-    let next = match (claude_target, opencode_target) {
-        (true, true) => "Restart Claude Code, or start a new OpenCode session",
-        (true, false) => "Restart Claude Code",
-        _ => "Start a new OpenCode session",
+    if let Some(python) = python {
+        install_antigravity(&paths, python, enforce)?;
+    }
+
+    let mut hints = Vec::new();
+    if claude_target {
+        hints.push("restart Claude Code");
+    }
+    if opencode_target {
+        hints.push("start a new OpenCode session");
+    }
+    if agy_target {
+        hints.push("restart Antigravity");
+    }
+    let next = hints.join(", or ");
+    let mut chars = next.chars();
+    let capitalized = match chars.next() {
+        Some(first) => format!("{}{}", first.to_uppercase(), chars.as_str()),
+        None => String::new(),
     };
-    log(format_args!("Done. {next}, then check the MCP server list"));
+    log(format_args!(
+        "Done. {capitalized}, then check the MCP server list"
+    ));
     report_other_copy(&current_exe()?);
     Ok(())
 }
@@ -299,6 +441,94 @@ fn setup_opencode(paths: &Paths, exe: &str, enforce: bool) -> Result<()> {
     Ok(())
 }
 
+fn install_antigravity(paths: &Paths, python: &str, enforce: bool) -> Result<()> {
+    let exe = current_exe()?;
+    setup_antigravity(paths, &native_path(&exe), python, enforce)
+}
+
+fn setup_antigravity(paths: &Paths, exe: &str, python: &str, enforce: bool) -> Result<()> {
+    log(format_args!(
+        "Writing Antigravity MCP bridge {}",
+        paths.agy_bridge.display()
+    ));
+    write_executable(&paths.agy_bridge, AGY_BRIDGE)?;
+
+    log(format_args!(
+        "Registering MCP server 'astlens' with Antigravity ({})",
+        paths.agy_mcp_config.display()
+    ));
+    let mut config = match read_settings(&paths.agy_mcp_config)? {
+        Some(config) => {
+            let backup = paths.agy_mcp_config.with_extension("json.bak");
+            fs::copy(&paths.agy_mcp_config, &backup)
+                .with_context(|| format!("cannot write {}", backup.display()))?;
+            config
+        }
+        None => json!({}),
+    };
+    let root = config
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("{} is not a JSON object", paths.agy_mcp_config.display()))?;
+    let servers = match root.get("mcpServers") {
+        None => {
+            root.insert("mcpServers".to_string(), json!({}));
+            root.get_mut("mcpServers").and_then(Value::as_object_mut)
+        }
+        Some(Value::Object(_)) => root.get_mut("mcpServers").and_then(Value::as_object_mut),
+        Some(_) => bail!(
+            "{}: 'mcpServers' is not a JSON object; fix it first",
+            paths.agy_mcp_config.display()
+        ),
+    }
+    .ok_or_else(|| {
+        anyhow!(
+            "cannot access mcpServers in {}",
+            paths.agy_mcp_config.display()
+        )
+    })?;
+    servers.insert(
+        SERVER.to_string(),
+        json!({
+            "command": python,
+            "args": [native_path(&paths.agy_bridge), exe],
+            "disabled": false,
+        }),
+    );
+    if let Some(dir) = paths.agy_mcp_config.parent() {
+        fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
+    }
+    write_settings(&paths.agy_mcp_config, &config)?;
+
+    if enforce {
+        remove_if_exists(&paths.agy_plugin_dir.join("bin").join(AGY_BRIDGE_NAME))?;
+        remove_dir_if_empty(&paths.agy_plugin_dir.join("bin"))?;
+
+        log(format_args!(
+            "Writing Antigravity plugin {}",
+            paths.agy_plugin_dir.display()
+        ));
+        write_plugin_file(
+            &paths.agy_plugin_dir.join("plugin.json"),
+            &agy_plugin_json()?,
+        )?;
+        write_plugin_file(&paths.agy_plugin_dir.join("assets/logo.svg"), AGY_LOGO_SVG)?;
+        write_plugin_file(
+            &paths.agy_plugin_dir.join("hooks.json"),
+            &agy_hooks_json(python)?,
+        )?;
+        write_executable(
+            &paths.agy_plugin_dir.join("hooks").join(AGY_GUARD_NAME),
+            AGY_GUARD,
+        )?;
+        write_hook(&paths.agy_plugin_dir.join("hooks").join(GUARD_NAME))?;
+        write_plugin_file(&paths.agy_plugin_dir.join("rules/AGENTS.md"), AGY_AGENTS_MD)?;
+    } else {
+        log("Removing any Antigravity guard plugin from an earlier install");
+        remove_antigravity_enforcement(paths)?;
+    }
+    Ok(())
+}
+
 /// Register the server through `run`, which stands for the `claude` CLI. An
 /// earlier registration is the usual reason `add-json` fails, so it is removed
 /// only then: any other failure leaves a working registration in place.
@@ -351,35 +581,52 @@ pub fn uninstall() -> Result<()> {
             ));
         }
     }
+    log(format_args!(
+        "Removing MCP server registration from Antigravity ({})",
+        paths.agy_mcp_config.display()
+    ));
+    if let Err(err) = remove_antigravity_server(&paths) {
+        log(format_args!(
+            "{err}; if astlens is still listed, remove it from {} by hand",
+            paths.agy_mcp_config.display()
+        ));
+    }
     log("Removing hooks, instruction blocks and PATH entry");
     remove_files(&paths)?;
     let exe = current_exe()?;
     remove_binary(&exe, &paths);
     report_other_copy(&exe);
-    log("Done. Restart Claude Code and open a new shell.");
+    log("Done. Restart Claude Code, OpenCode or Antigravity, and open a new shell.");
+    Ok(())
+}
+
+fn write_plugin_file(path: &Path, contents: &str) -> Result<()> {
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
+    }
+    write_atomic(path, contents).with_context(|| format!("cannot write {}", path.display()))
+}
+
+fn write_executable(path: &Path, contents: &str) -> Result<()> {
+    write_plugin_file(path, contents)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755))
+            .with_context(|| format!("cannot make {} executable", path.display()))?;
+    }
     Ok(())
 }
 
 fn write_hook(hook: &Path) -> Result<()> {
-    if let Some(dir) = hook.parent() {
-        fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
-    }
-    write_atomic(hook, GUARD).with_context(|| format!("cannot write {}", hook.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(hook, fs::Permissions::from_mode(0o755))
-            .with_context(|| format!("cannot make {} executable", hook.display()))?;
-    }
-    Ok(())
+    write_executable(hook, GUARD)
 }
 
 /// The OpenCode plugin is a directory with the TypeScript entry point and the
 /// shared shell guard beside it.
 fn write_opencode_guard(paths: &Paths) -> Result<()> {
     write_hook(&paths.opencode_guard)?;
-    write_atomic(&paths.opencode_plugin, OPENCODE_PLUGIN)
-        .with_context(|| format!("cannot write {}", paths.opencode_plugin.display()))
+    write_plugin_file(&paths.opencode_plugin, OPENCODE_PLUGIN)
 }
 
 /// Read settings, refusing to touch a file that is not a JSON object.
@@ -558,10 +805,34 @@ fn strip_block_in_file(path: &Path, begin: &str, end: &str) -> Result<()> {
     Ok(())
 }
 
+fn remove_if_exists(path: &Path) -> Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err).with_context(|| format!("cannot remove {}", path.display())),
+    }
+}
+
+fn remove_dir_if_empty(dir: &Path) -> Result<()> {
+    match fs::remove_dir(dir) {
+        Ok(()) => Ok(()),
+        Err(err)
+            if matches!(
+                err.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::DirectoryNotEmpty
+            ) =>
+        {
+            Ok(())
+        }
+        Err(err) => Err(err).with_context(|| format!("cannot remove {}", dir.display())),
+    }
+}
+
 /// Everything uninstall removes except the MCP registration and the binary.
 fn remove_files(paths: &Paths) -> Result<()> {
     remove_enforcement(paths)?;
     remove_opencode_enforcement(paths)?;
+    remove_antigravity_enforcement(paths)?;
     for rc in &paths.rc_files {
         strip_block_in_file(rc, RC_BEGIN, RC_END)?;
     }
@@ -578,13 +849,7 @@ fn remove_enforcement(paths: &Paths) -> Result<()> {
             write_settings(&paths.claude_settings, &settings)?;
         }
     }
-    match fs::remove_file(&paths.claude_hook) {
-        Err(err) if err.kind() != io::ErrorKind::NotFound => {
-            return Err(err)
-                .with_context(|| format!("cannot remove {}", paths.claude_hook.display()));
-        }
-        _ => {}
-    }
+    remove_if_exists(&paths.claude_hook)?;
     strip_block_in_file(&paths.claude_memory, MEMORY_BEGIN, MEMORY_END)
 }
 
@@ -592,27 +857,135 @@ fn remove_enforcement(paths: &Paths) -> Result<()> {
 /// block.
 fn remove_opencode_enforcement(paths: &Paths) -> Result<()> {
     for path in [&paths.opencode_plugin, &paths.opencode_guard] {
-        match fs::remove_file(path) {
-            Err(err) if err.kind() != io::ErrorKind::NotFound => {
-                return Err(err).with_context(|| format!("cannot remove {}", path.display()));
-            }
-            _ => {}
-        }
+        remove_if_exists(path)?;
     }
     if let Some(dir) = paths.opencode_plugin.parent() {
-        match fs::remove_dir(dir) {
-            Err(err)
-                if !matches!(
-                    err.kind(),
-                    io::ErrorKind::NotFound | io::ErrorKind::DirectoryNotEmpty
-                ) =>
-            {
-                return Err(err).with_context(|| format!("cannot remove {}", dir.display()));
-            }
-            _ => {}
-        }
+        remove_dir_if_empty(dir)?;
     }
     strip_block_in_file(&paths.opencode_memory, MEMORY_BEGIN, MEMORY_END)
+}
+
+fn remove_antigravity_server(paths: &Paths) -> Result<()> {
+    if let Some(mut config) = read_settings(&paths.agy_mcp_config)? {
+        let before = config.clone();
+        if let Some(root) = config.as_object_mut()
+            && let Some(servers) = root.get_mut("mcpServers").and_then(Value::as_object_mut)
+        {
+            servers.remove(SERVER);
+            if servers.is_empty() {
+                root.remove("mcpServers");
+            }
+        }
+        if config != before {
+            write_settings(&paths.agy_mcp_config, &config)?;
+        }
+    }
+    remove_if_exists(&paths.agy_bridge)?;
+    if let Some(dir) = paths.agy_bridge.parent() {
+        remove_dir_if_empty(dir)?;
+    }
+    Ok(())
+}
+
+/// Remove the Antigravity guard plugin files and empty plugin folders, leaving
+/// unrelated files untouched.
+fn remove_antigravity_enforcement(paths: &Paths) -> Result<()> {
+    let known = [
+        "plugin.json",
+        "README.md",
+        "hooks.json",
+        "assets/logo.svg",
+        "rules/AGENTS.md",
+    ];
+    for rel in known {
+        remove_if_exists(&paths.agy_plugin_dir.join(rel))?;
+    }
+    for rel in [
+        format!("bin/{AGY_BRIDGE_NAME}"),
+        format!("hooks/{AGY_GUARD_NAME}"),
+        format!("hooks/{GUARD_NAME}"),
+    ] {
+        remove_if_exists(&paths.agy_plugin_dir.join(rel))?;
+    }
+    for subdir in ["assets", "bin", "hooks", "rules"] {
+        remove_dir_if_empty(&paths.agy_plugin_dir.join(subdir))?;
+    }
+    remove_dir_if_empty(&paths.agy_plugin_dir)
+}
+
+fn has_our_hook(settings: &Value, hook: &Path) -> bool {
+    settings
+        .pointer("/hooks/PreToolUse")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.get("hooks").and_then(Value::as_array))
+        .flatten()
+        .filter_map(|entry| entry.get("command").and_then(Value::as_str))
+        .any(|command| names_hook(command, hook))
+}
+
+fn has_mcp_server(path: &Path) -> bool {
+    read_settings(path)
+        .ok()
+        .flatten()
+        .is_some_and(|v| v.get("mcpServers").and_then(|m| m.get(SERVER)).is_some())
+}
+
+fn opencode_has_server(paths: &Paths) -> bool {
+    let config = paths.opencode_config();
+    let Ok(text) = fs::read_to_string(&config) else {
+        return false;
+    };
+    let Ok(root) = jsonc_parser::cst::CstRootNode::parse(&text, &Default::default()) else {
+        return false;
+    };
+    root.object_value()
+        .and_then(|obj| obj.object_value("mcp"))
+        .and_then(|mcp| mcp.object_value("servers"))
+        .is_some_and(|servers| servers.get(SERVER).is_some())
+}
+
+fn configured_clients_in(paths: &Paths) -> Vec<(&'static str, &'static str)> {
+    let mut clients = Vec::new();
+    let claude_enforced = paths.claude_hook.is_file()
+        || read_settings(&paths.claude_settings)
+            .ok()
+            .flatten()
+            .is_some_and(|s| has_our_hook(&s, &paths.claude_hook));
+    if claude_enforced {
+        clients.push(("claude", "enforced"));
+    } else if has_mcp_server(&paths.claude_mcp) {
+        clients.push(("claude", "mcp only"));
+    }
+
+    if opencode_has_server(paths) {
+        let mode = if paths.opencode_plugin.is_file() {
+            "enforced"
+        } else {
+            "mcp only"
+        };
+        clients.push(("opencode", mode));
+    }
+
+    if has_mcp_server(&paths.agy_mcp_config) {
+        let mode = if paths.agy_plugin_dir.join("hooks.json").is_file() {
+            "enforced"
+        } else {
+            "mcp only"
+        };
+        clients.push(("antigravity", mode));
+    }
+    clients
+}
+
+/// Which supported clients look configured in this user's home files; used by
+/// `doctor` without mutating files or launching subprocesses.
+pub(crate) fn configured_clients() -> Vec<(&'static str, &'static str)> {
+    match Paths::from_env() {
+        Ok(paths) => configured_clients_in(&paths),
+        Err(_) => Vec::new(),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -729,18 +1102,26 @@ pub fn report_other_copy(exe: &Path) {
 mod tests {
     use super::*;
 
-    /// The global layout: OpenCode's config directory is `~/.config/opencode`.
+    /// The global layout: OpenCode in `~/.config/opencode`, Antigravity in `~/.gemini/config`.
     fn paths(dir: &Path) -> Paths {
         let opencode = dir.join(".config/opencode");
         let plugin = opencode.join("plugins/astlens-guard");
+        let gemini = dir.join(".gemini");
+        let agy_config = gemini.join("config");
         Paths {
             config_dir: opencode.clone(),
             claude_hook: dir.join(".claude/hooks").join(GUARD_NAME),
             claude_settings: dir.join(".claude/settings.json"),
             claude_memory: dir.join(".claude/CLAUDE.md"),
+            claude_mcp: dir.join(".claude.json"),
             opencode_memory: opencode.join("AGENTS.md"),
             opencode_plugin: plugin.join(OPENCODE_PLUGIN_NAME),
             opencode_guard: plugin.join(GUARD_NAME),
+            agy_app_dir: gemini.join("antigravity"),
+            agy_config_dir: agy_config.clone(),
+            agy_mcp_config: agy_config.join("mcp_config.json"),
+            agy_bridge: agy_config.join("astlens").join(AGY_BRIDGE_NAME),
+            agy_plugin_dir: agy_config.join("plugins").join(SERVER),
             rc_files: vec![dir.join(".bashrc"), dir.join("fish/config.fish")],
             cargo_bin: dir.join(".cargo/bin"),
             bin_dir: dir.join(".local/bin"),
@@ -1121,15 +1502,150 @@ mod tests {
     }
 
     #[test]
+    fn antigravity_setup_writes_bridge_mcp_config_and_plugin() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        fs::create_dir_all(&paths.agy_config_dir).unwrap();
+        fs::write(
+            &paths.agy_mcp_config,
+            "{\n  \"mcpServers\": {\n    \"other\": {\"command\": \"npx\", \"args\": [\"x\"]}\n  }\n}\n",
+        )
+        .unwrap();
+
+        setup_antigravity(&paths, "/bin/astlens", "python3", true).unwrap();
+
+        let backup = paths.agy_mcp_config.with_extension("json.bak");
+        assert!(backup.is_file());
+        let config = read_settings(&paths.agy_mcp_config).unwrap().unwrap();
+        assert_eq!(config["mcpServers"]["other"]["command"], "npx");
+        assert_eq!(config["mcpServers"]["astlens"]["command"], "python3");
+        assert_eq!(
+            config["mcpServers"]["astlens"]["args"],
+            json!([native_path(&paths.agy_bridge), "/bin/astlens"])
+        );
+        assert_eq!(config["mcpServers"]["astlens"]["disabled"], false);
+        assert!(paths.agy_bridge.is_file());
+
+        let plugin: Value = serde_json::from_str(
+            &fs::read_to_string(paths.agy_plugin_dir.join("plugin.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(plugin["name"], "astlens");
+        assert_eq!(plugin["version"], env!("CARGO_PKG_VERSION"));
+        let hooks: Value = serde_json::from_str(
+            &fs::read_to_string(paths.agy_plugin_dir.join("hooks.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(hooks["astlens-guard"]["PreToolUse"].is_array());
+        assert!(paths.agy_plugin_dir.join("assets/logo.svg").is_file());
+        assert!(paths.agy_plugin_dir.join("hooks/agy-guard.py").is_file());
+        assert!(
+            paths
+                .agy_plugin_dir
+                .join(format!("hooks/{GUARD_NAME}"))
+                .is_file()
+        );
+        assert!(
+            fs::read_to_string(paths.agy_plugin_dir.join("rules/AGENTS.md"))
+                .unwrap()
+                .contains("read_symbol")
+        );
+    }
+
+    #[test]
+    fn antigravity_setup_without_enforce_removes_plugin_but_keeps_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        setup_antigravity(&paths, "/bin/astlens", "python3", true).unwrap();
+        setup_antigravity(&paths, "/bin/astlens", "python3", false).unwrap();
+
+        assert!(!paths.agy_plugin_dir.exists());
+        assert!(paths.agy_bridge.is_file());
+        let config = read_settings(&paths.agy_mcp_config).unwrap().unwrap();
+        assert_eq!(config["mcpServers"]["astlens"]["command"], "python3");
+    }
+
+    #[test]
+    fn antigravity_uninstall_cleans_server_bridge_and_preserves_shared_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        fs::create_dir_all(&paths.agy_config_dir).unwrap();
+        fs::write(
+            &paths.agy_mcp_config,
+            "{\"mcpServers\": {\"other\": {\"command\": \"x\"}}}\n",
+        )
+        .unwrap();
+
+        setup_antigravity(&paths, "/bin/astlens", "python3", true).unwrap();
+        let custom = paths.agy_plugin_dir.join("notes.txt");
+        fs::write(&custom, "keep").unwrap();
+
+        remove_antigravity_server(&paths).unwrap();
+        remove_antigravity_enforcement(&paths).unwrap();
+
+        assert!(!paths.agy_bridge.exists());
+        let config = read_settings(&paths.agy_mcp_config).unwrap().unwrap();
+        assert!(config["mcpServers"].get("astlens").is_none());
+        assert_eq!(config["mcpServers"]["other"]["command"], "x");
+        assert!(!paths.agy_plugin_dir.join("hooks.json").exists());
+        assert_eq!(fs::read_to_string(custom).unwrap(), "keep");
+
+        // When astlens was the only server, mcpServers itself is cleaned up.
+        fs::write(
+            &paths.agy_mcp_config,
+            "{\"mcpServers\": {\"astlens\": {\"command\": \"python3\"}}}\n",
+        )
+        .unwrap();
+        remove_antigravity_server(&paths).unwrap();
+        let empty = read_settings(&paths.agy_mcp_config).unwrap().unwrap();
+        assert!(empty.get("mcpServers").is_none());
+    }
+
+    #[test]
+    fn configured_clients_reports_modes() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        assert!(configured_clients_in(&paths).is_empty());
+
+        setup_opencode(&paths, "/bin/astlens", false).unwrap();
+        setup_antigravity(&paths, "/bin/astlens", "python3", true).unwrap();
+        assert_eq!(
+            configured_clients_in(&paths),
+            vec![("opencode", "mcp only"), ("antigravity", "enforced")]
+        );
+
+        fs::create_dir_all(paths.claude_mcp.parent().unwrap()).unwrap();
+        fs::write(
+            &paths.claude_mcp,
+            "{\"mcpServers\": {\"astlens\": {\"command\": \"/bin/astlens\"}}}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            configured_clients_in(&paths),
+            vec![
+                ("claude", "mcp only"),
+                ("opencode", "mcp only"),
+                ("antigravity", "enforced"),
+            ]
+        );
+    }
+
+    #[test]
     fn binary_owner_follows_its_location() {
         let paths = Paths {
             config_dir: PathBuf::new(),
             claude_hook: PathBuf::new(),
             claude_settings: PathBuf::new(),
             claude_memory: PathBuf::new(),
+            claude_mcp: PathBuf::new(),
             opencode_memory: PathBuf::new(),
             opencode_plugin: PathBuf::new(),
             opencode_guard: PathBuf::new(),
+            agy_app_dir: PathBuf::new(),
+            agy_config_dir: PathBuf::new(),
+            agy_mcp_config: PathBuf::new(),
+            agy_bridge: PathBuf::new(),
+            agy_plugin_dir: PathBuf::new(),
             rc_files: Vec::new(),
             cargo_bin: PathBuf::from("/nonexistent-home/.cargo/bin"),
             bin_dir: PathBuf::from("/nonexistent-home/.local/bin"),

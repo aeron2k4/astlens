@@ -218,5 +218,36 @@ case "$reason" in
   *) printf 'FAIL OpenCode hint: %s\n' "$reason"; fail=1 ;;
 esac
 
+# Antigravity adapter translates PreToolUse events and records workspace root.
+if command -v python3 >/dev/null 2>&1; then
+  AGY_DIR="$WS/agy-hooks"
+  mkdir -p "$AGY_DIR" "$WS/.cache"
+  cp "$GUARD" "$AGY_DIR/astlens-guard.sh"
+  cp "$(dirname "$GUARD")/agy-guard.py" "$AGY_DIR/agy-guard.py"
+
+  agy_verdict() {
+    local tool=$1 args_json=$2
+    XDG_CACHE_HOME="$WS/.cache" jq -n --arg c "$WS" --arg t "$tool" --argjson a "$args_json" \
+      '{hookEventName: "PreToolUse", cwd: $c, toolCall: {name: $t, args: $a}}' |
+      XDG_CACHE_HOME="$WS/.cache" python3 "$AGY_DIR/agy-guard.py"
+  }
+
+  out=$(agy_verdict read_file "{\"Path\": \"$WS/src/main.rs\"}")
+  [ "$(jq -r '.decision' <<<"$out")" = "deny" ] || { printf 'FAIL agy whole read: %s\n' "$out"; fail=1; }
+  case "$(jq -r '.reason' <<<"$out")" in
+    *call_mcp_tool*) ;;
+    *) printf 'FAIL agy reason: %s\n' "$out"; fail=1 ;;
+  esac
+
+  out=$(agy_verdict read_file "{\"Path\": \"$WS/src/main.rs\", \"StartLine\": 1, \"EndLine\": 50}")
+  [ "$(jq -r '.decision' <<<"$out")" = "allow" ] || { printf 'FAIL agy bounded read: %s\n' "$out"; fail=1; }
+
+  out=$(agy_verdict run_command '{"CommandLine": "cat src/main.rs"}')
+  [ "$(jq -r '.decision' <<<"$out")" = "deny" ] || { printf 'FAIL agy cat: %s\n' "$out"; fail=1; }
+
+  got_root=$(cat "$WS/.cache/astlens/antigravity_root" 2>/dev/null || true)
+  [ "$got_root" = "$WS" ] || { printf 'FAIL agy root cache: want %s, got %s\n' "$WS" "$got_root"; fail=1; }
+fi
+
 ((fail)) && exit 1
 echo 'guard: all cases pass'
