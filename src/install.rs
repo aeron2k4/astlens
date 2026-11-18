@@ -24,10 +24,6 @@ const GUARD: &str = include_str!("../scripts/astlens-guard.sh");
 const GUARD_NAME: &str = "astlens-guard.sh";
 const OPENCODE_PLUGIN: &str = include_str!("../scripts/opencode-guard.ts");
 const OPENCODE_PLUGIN_NAME: &str = "index.ts";
-const AGY_BRIDGE: &str = include_str!("../scripts/agy-mcp-bridge.py");
-const AGY_BRIDGE_NAME: &str = "agy-mcp-bridge.py";
-const AGY_GUARD: &str = include_str!("../scripts/agy-guard.py");
-const AGY_GUARD_NAME: &str = "agy-guard.py";
 
 const AGY_LOGO_SVG: &str = "\
 <svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 128 128\" width=\"128\" height=\"128\">
@@ -76,8 +72,8 @@ fn agy_plugin_json() -> Result<String> {
     Ok(text)
 }
 
-fn agy_hooks_json(python: &str) -> Result<String> {
-    let cmd = format!("{python} ./hooks/{AGY_GUARD_NAME}");
+fn agy_hooks_json(exe: &str) -> Result<String> {
+    let cmd = format!("\"{exe}\" guard --client antigravity");
     let entry = |matcher: &str, timeout: u64| {
         json!({
             "matcher": matcher,
@@ -162,8 +158,9 @@ struct Paths {
     agy_app_dir: PathBuf,
     agy_config_dir: PathBuf,
     agy_mcp_config: PathBuf,
-    agy_bridge: PathBuf,
+    agy_legacy_bridge: PathBuf,
     agy_plugin_dir: PathBuf,
+    agy_root_file: Option<PathBuf>,
     rc_files: Vec<PathBuf>,
     /// Where `cargo install` puts a binary, `~/.cargo/bin`.
     cargo_bin: PathBuf,
@@ -198,8 +195,9 @@ impl Paths {
             agy_app_dir: gemini.join("antigravity"),
             agy_config_dir: agy_config.clone(),
             agy_mcp_config: agy_config.join("mcp_config.json"),
-            agy_bridge: agy_config.join("astlens").join(AGY_BRIDGE_NAME),
+            agy_legacy_bridge: agy_config.join("astlens").join("agy-mcp-bridge.py"),
             agy_plugin_dir: agy_config.join("plugins").join(SERVER),
+            agy_root_file: crate::guard::antigravity_root_file(),
             rc_files: vec![
                 home.join(".bashrc"),
                 home.join(".bash_profile"),
@@ -271,16 +269,6 @@ fn antigravity_available(paths: &Paths) -> bool {
     runs("agy") || paths.agy_app_dir.exists() || paths.agy_config_dir.exists()
 }
 
-fn python_program() -> Option<&'static str> {
-    if runs("python3") {
-        Some("python3")
-    } else if cfg!(windows) && runs("python") {
-        Some("python")
-    } else {
-        None
-    }
-}
-
 pub fn install(enforce: bool, client: Client) -> Result<()> {
     let paths = Paths::from_env()?;
     let (claude_target, opencode_target, agy_target) = match client {
@@ -307,19 +295,10 @@ pub fn install(enforce: bool, client: Client) -> Result<()> {
     };
 
     // Checked once, before anything is written, so a missing tool never
-    // leaves one client set up and another not.
-    let python = if agy_target {
-        Some(python_program().ok_or_else(|| {
-            anyhow!(
-                "'python3' not found, and Antigravity integration needs it; install Python 3 first"
-            )
-        })?)
-    } else {
-        None
-    };
-
-    if enforce {
-        let guard = match (claude_target, opencode_target || agy_target) {
+    // leaves one client set up and another not. Antigravity uses the native
+    // `astlens guard` subcommand directly and needs no shell/jq runtime.
+    if enforce && (claude_target || opencode_target) {
+        let guard = match (claude_target, opencode_target) {
             (true, true) => "the hook and the guard plugin need",
             (true, false) => "the hook needs",
             _ => "the guard plugin needs",
@@ -342,8 +321,8 @@ pub fn install(enforce: bool, client: Client) -> Result<()> {
     if opencode_target {
         install_opencode(&paths, enforce)?;
     }
-    if let Some(python) = python {
-        install_antigravity(&paths, python, enforce)?;
+    if agy_target {
+        install_antigravity(&paths, enforce)?;
     }
 
     let mut hints = Vec::new();
@@ -441,17 +420,17 @@ fn setup_opencode(paths: &Paths, exe: &str, enforce: bool) -> Result<()> {
     Ok(())
 }
 
-fn install_antigravity(paths: &Paths, python: &str, enforce: bool) -> Result<()> {
+fn install_antigravity(paths: &Paths, enforce: bool) -> Result<()> {
     let exe = current_exe()?;
-    setup_antigravity(paths, &native_path(&exe), python, enforce)
+    setup_antigravity(paths, &native_path(&exe), enforce)
 }
 
-fn setup_antigravity(paths: &Paths, exe: &str, python: &str, enforce: bool) -> Result<()> {
-    log(format_args!(
-        "Writing Antigravity MCP bridge {}",
-        paths.agy_bridge.display()
-    ));
-    write_executable(&paths.agy_bridge, AGY_BRIDGE)?;
+fn setup_antigravity(paths: &Paths, exe: &str, enforce: bool) -> Result<()> {
+    // Clean up legacy Python bridge script from earlier installs if present.
+    remove_if_exists(&paths.agy_legacy_bridge)?;
+    if let Some(dir) = paths.agy_legacy_bridge.parent() {
+        remove_dir_if_empty(dir)?;
+    }
 
     log(format_args!(
         "Registering MCP server 'astlens' with Antigravity ({})",
@@ -489,8 +468,11 @@ fn setup_antigravity(paths: &Paths, exe: &str, python: &str, enforce: bool) -> R
     servers.insert(
         SERVER.to_string(),
         json!({
-            "command": python,
-            "args": [native_path(&paths.agy_bridge), exe],
+            "command": exe,
+            "args": ["--serve"],
+            "env": {
+                "ASTLENS_CLIENT": "antigravity"
+            },
             "disabled": false,
         }),
     );
@@ -500,8 +482,17 @@ fn setup_antigravity(paths: &Paths, exe: &str, python: &str, enforce: bool) -> R
     write_settings(&paths.agy_mcp_config, &config)?;
 
     if enforce {
-        remove_if_exists(&paths.agy_plugin_dir.join("bin").join(AGY_BRIDGE_NAME))?;
-        remove_dir_if_empty(&paths.agy_plugin_dir.join("bin"))?;
+        // Clean up legacy Python/shell scripts inside the plugin folder if present.
+        for rel in [
+            "bin/agy-mcp-bridge.py",
+            "hooks/agy-guard.py",
+            "hooks/astlens-guard.sh",
+        ] {
+            remove_if_exists(&paths.agy_plugin_dir.join(rel))?;
+        }
+        for subdir in ["bin", "hooks"] {
+            remove_dir_if_empty(&paths.agy_plugin_dir.join(subdir))?;
+        }
 
         log(format_args!(
             "Writing Antigravity plugin {}",
@@ -514,13 +505,8 @@ fn setup_antigravity(paths: &Paths, exe: &str, python: &str, enforce: bool) -> R
         write_plugin_file(&paths.agy_plugin_dir.join("assets/logo.svg"), AGY_LOGO_SVG)?;
         write_plugin_file(
             &paths.agy_plugin_dir.join("hooks.json"),
-            &agy_hooks_json(python)?,
+            &agy_hooks_json(exe)?,
         )?;
-        write_executable(
-            &paths.agy_plugin_dir.join("hooks").join(AGY_GUARD_NAME),
-            AGY_GUARD,
-        )?;
-        write_hook(&paths.agy_plugin_dir.join("hooks").join(GUARD_NAME))?;
         write_plugin_file(&paths.agy_plugin_dir.join("rules/AGENTS.md"), AGY_AGENTS_MD)?;
     } else {
         log("Removing any Antigravity guard plugin from an earlier install");
@@ -880,8 +866,8 @@ fn remove_antigravity_server(paths: &Paths) -> Result<()> {
             write_settings(&paths.agy_mcp_config, &config)?;
         }
     }
-    remove_if_exists(&paths.agy_bridge)?;
-    if let Some(dir) = paths.agy_bridge.parent() {
+    remove_if_exists(&paths.agy_legacy_bridge)?;
+    if let Some(dir) = paths.agy_legacy_bridge.parent() {
         remove_dir_if_empty(dir)?;
     }
     Ok(())
@@ -896,21 +882,21 @@ fn remove_antigravity_enforcement(paths: &Paths) -> Result<()> {
         "hooks.json",
         "assets/logo.svg",
         "rules/AGENTS.md",
+        "bin/agy-mcp-bridge.py",
+        "hooks/agy-guard.py",
     ];
     for rel in known {
         remove_if_exists(&paths.agy_plugin_dir.join(rel))?;
     }
-    for rel in [
-        format!("bin/{AGY_BRIDGE_NAME}"),
-        format!("hooks/{AGY_GUARD_NAME}"),
-        format!("hooks/{GUARD_NAME}"),
-    ] {
-        remove_if_exists(&paths.agy_plugin_dir.join(rel))?;
-    }
+    remove_if_exists(&paths.agy_plugin_dir.join(format!("hooks/{GUARD_NAME}")))?;
     for subdir in ["assets", "bin", "hooks", "rules"] {
         remove_dir_if_empty(&paths.agy_plugin_dir.join(subdir))?;
     }
-    remove_dir_if_empty(&paths.agy_plugin_dir)
+    remove_dir_if_empty(&paths.agy_plugin_dir)?;
+    if let Some(root_file) = &paths.agy_root_file {
+        remove_if_exists(root_file)?;
+    }
+    Ok(())
 }
 
 fn has_our_hook(settings: &Value, hook: &Path) -> bool {
@@ -1120,8 +1106,9 @@ mod tests {
             agy_app_dir: gemini.join("antigravity"),
             agy_config_dir: agy_config.clone(),
             agy_mcp_config: agy_config.join("mcp_config.json"),
-            agy_bridge: agy_config.join("astlens").join(AGY_BRIDGE_NAME),
+            agy_legacy_bridge: agy_config.join("astlens").join("agy-mcp-bridge.py"),
             agy_plugin_dir: agy_config.join("plugins").join(SERVER),
+            agy_root_file: Some(dir.join(".cache/astlens/antigravity_root")),
             rc_files: vec![dir.join(".bashrc"), dir.join("fish/config.fish")],
             cargo_bin: dir.join(".cargo/bin"),
             bin_dir: dir.join(".local/bin"),
@@ -1502,7 +1489,7 @@ mod tests {
     }
 
     #[test]
-    fn antigravity_setup_writes_bridge_mcp_config_and_plugin() {
+    fn antigravity_setup_writes_native_mcp_config_and_plugin() {
         let dir = tempfile::tempdir().unwrap();
         let paths = paths(dir.path());
         fs::create_dir_all(&paths.agy_config_dir).unwrap();
@@ -1511,20 +1498,29 @@ mod tests {
             "{\n  \"mcpServers\": {\n    \"other\": {\"command\": \"npx\", \"args\": [\"x\"]}\n  }\n}\n",
         )
         .unwrap();
+        // Legacy Python scripts from an older install are cleaned up.
+        fs::create_dir_all(paths.agy_legacy_bridge.parent().unwrap()).unwrap();
+        fs::write(&paths.agy_legacy_bridge, "#!/usr/bin/env python3\n").unwrap();
+        let legacy_py_hook = paths.agy_plugin_dir.join("hooks/agy-guard.py");
+        fs::create_dir_all(legacy_py_hook.parent().unwrap()).unwrap();
+        fs::write(&legacy_py_hook, "#!/usr/bin/env python3\n").unwrap();
 
-        setup_antigravity(&paths, "/bin/astlens", "python3", true).unwrap();
+        setup_antigravity(&paths, "/bin/astlens", true).unwrap();
+
+        assert!(!paths.agy_legacy_bridge.exists());
+        assert!(!legacy_py_hook.exists());
 
         let backup = paths.agy_mcp_config.with_extension("json.bak");
         assert!(backup.is_file());
         let config = read_settings(&paths.agy_mcp_config).unwrap().unwrap();
         assert_eq!(config["mcpServers"]["other"]["command"], "npx");
-        assert_eq!(config["mcpServers"]["astlens"]["command"], "python3");
+        assert_eq!(config["mcpServers"]["astlens"]["command"], "/bin/astlens");
+        assert_eq!(config["mcpServers"]["astlens"]["args"], json!(["--serve"]));
         assert_eq!(
-            config["mcpServers"]["astlens"]["args"],
-            json!([native_path(&paths.agy_bridge), "/bin/astlens"])
+            config["mcpServers"]["astlens"]["env"]["ASTLENS_CLIENT"],
+            "antigravity"
         );
         assert_eq!(config["mcpServers"]["astlens"]["disabled"], false);
-        assert!(paths.agy_bridge.is_file());
 
         let plugin: Value = serde_json::from_str(
             &fs::read_to_string(paths.agy_plugin_dir.join("plugin.json")).unwrap(),
@@ -1536,15 +1532,12 @@ mod tests {
             &fs::read_to_string(paths.agy_plugin_dir.join("hooks.json")).unwrap(),
         )
         .unwrap();
+        assert_eq!(
+            hooks["astlens-guard"]["SessionStart"][0]["command"],
+            "\"/bin/astlens\" guard --client antigravity"
+        );
         assert!(hooks["astlens-guard"]["PreToolUse"].is_array());
         assert!(paths.agy_plugin_dir.join("assets/logo.svg").is_file());
-        assert!(paths.agy_plugin_dir.join("hooks/agy-guard.py").is_file());
-        assert!(
-            paths
-                .agy_plugin_dir
-                .join(format!("hooks/{GUARD_NAME}"))
-                .is_file()
-        );
         assert!(
             fs::read_to_string(paths.agy_plugin_dir.join("rules/AGENTS.md"))
                 .unwrap()
@@ -1556,17 +1549,21 @@ mod tests {
     fn antigravity_setup_without_enforce_removes_plugin_but_keeps_server() {
         let dir = tempfile::tempdir().unwrap();
         let paths = paths(dir.path());
-        setup_antigravity(&paths, "/bin/astlens", "python3", true).unwrap();
-        setup_antigravity(&paths, "/bin/astlens", "python3", false).unwrap();
+        setup_antigravity(&paths, "/bin/astlens", true).unwrap();
+        if let Some(rf) = &paths.agy_root_file {
+            fs::create_dir_all(rf.parent().unwrap()).unwrap();
+            fs::write(rf, "/tmp/ws\n").unwrap();
+        }
+        setup_antigravity(&paths, "/bin/astlens", false).unwrap();
 
         assert!(!paths.agy_plugin_dir.exists());
-        assert!(paths.agy_bridge.is_file());
+        assert!(!paths.agy_root_file.as_ref().unwrap().exists());
         let config = read_settings(&paths.agy_mcp_config).unwrap().unwrap();
-        assert_eq!(config["mcpServers"]["astlens"]["command"], "python3");
+        assert_eq!(config["mcpServers"]["astlens"]["command"], "/bin/astlens");
     }
 
     #[test]
-    fn antigravity_uninstall_cleans_server_bridge_and_preserves_shared_files() {
+    fn antigravity_uninstall_cleans_server_and_preserves_shared_files() {
         let dir = tempfile::tempdir().unwrap();
         let paths = paths(dir.path());
         fs::create_dir_all(&paths.agy_config_dir).unwrap();
@@ -1576,14 +1573,13 @@ mod tests {
         )
         .unwrap();
 
-        setup_antigravity(&paths, "/bin/astlens", "python3", true).unwrap();
+        setup_antigravity(&paths, "/bin/astlens", true).unwrap();
         let custom = paths.agy_plugin_dir.join("notes.txt");
         fs::write(&custom, "keep").unwrap();
 
         remove_antigravity_server(&paths).unwrap();
         remove_antigravity_enforcement(&paths).unwrap();
 
-        assert!(!paths.agy_bridge.exists());
         let config = read_settings(&paths.agy_mcp_config).unwrap().unwrap();
         assert!(config["mcpServers"].get("astlens").is_none());
         assert_eq!(config["mcpServers"]["other"]["command"], "x");
@@ -1593,7 +1589,7 @@ mod tests {
         // When astlens was the only server, mcpServers itself is cleaned up.
         fs::write(
             &paths.agy_mcp_config,
-            "{\"mcpServers\": {\"astlens\": {\"command\": \"python3\"}}}\n",
+            "{\"mcpServers\": {\"astlens\": {\"command\": \"/bin/astlens\"}}}\n",
         )
         .unwrap();
         remove_antigravity_server(&paths).unwrap();
@@ -1608,7 +1604,7 @@ mod tests {
         assert!(configured_clients_in(&paths).is_empty());
 
         setup_opencode(&paths, "/bin/astlens", false).unwrap();
-        setup_antigravity(&paths, "/bin/astlens", "python3", true).unwrap();
+        setup_antigravity(&paths, "/bin/astlens", true).unwrap();
         assert_eq!(
             configured_clients_in(&paths),
             vec![("opencode", "mcp only"), ("antigravity", "enforced")]
@@ -1644,8 +1640,9 @@ mod tests {
             agy_app_dir: PathBuf::new(),
             agy_config_dir: PathBuf::new(),
             agy_mcp_config: PathBuf::new(),
-            agy_bridge: PathBuf::new(),
+            agy_legacy_bridge: PathBuf::new(),
             agy_plugin_dir: PathBuf::new(),
+            agy_root_file: None,
             rc_files: Vec::new(),
             cargo_bin: PathBuf::from("/nonexistent-home/.cargo/bin"),
             bin_dir: PathBuf::from("/nonexistent-home/.local/bin"),

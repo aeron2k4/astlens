@@ -1,7 +1,17 @@
 #!/usr/bin/env bash
-# Table test for astlens-guard.sh; run from anywhere. Needs jq.
+# Table test for astlens-guard.sh and `astlens guard`; run from anywhere. Needs jq.
 set -u
-GUARD=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/astlens-guard.sh
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+REPO_DIR=$(cd "$SCRIPT_DIR/.." && pwd)
+GUARD=$SCRIPT_DIR/astlens-guard.sh
+if [ -n "${ASTLENS_TEST_BIN:-}" ]; then
+  BIN=$ASTLENS_TEST_BIN
+else
+  CARGO_BIN=$(command -v cargo || true)
+  [ -n "$CARGO_BIN" ] || CARGO_BIN="$HOME/.cargo/bin/cargo"
+  "$CARGO_BIN" build --quiet --locked --manifest-path "$REPO_DIR/Cargo.toml" || exit 1
+  BIN="$REPO_DIR/target/debug/astlens"
+fi
 WS=$(mktemp -d)
 trap 'rm -rf "$WS"' EXIT
 mkdir -p "$WS/src"
@@ -25,29 +35,39 @@ echo 'json.a 1' >"$WS/src/show.jbuilder"
 echo 'robe' >"$WS/src/robe.txt"
 fail=0
 
-# verdict <tool> <json tool_input>
+# verdict <mode> <tool> <json tool_input>
 verdict() {
-  local json
-  json=$(jq -n --arg t "$1" --arg c "$WS" --argjson i "$2" \
-    '{tool_name: $t, cwd: $c, tool_input: $i}' | bash "$GUARD") || {
-    printf 'FAIL guard crashed on: %s\n' "$2" >&2
-    fail=1
-    return
-  }
+  local mode=$1 payload json
+  payload=$(jq -n --arg t "$2" --arg c "$WS" --argjson i "$3" '{tool_name: $t, cwd: $c, tool_input: $i}')
+  if [ "$mode" = "sh" ]; then
+    json=$(bash "$GUARD" <<<"$payload") || {
+      printf 'FAIL sh guard crashed on: %s\n' "$3" >&2
+      fail=1
+      return
+    }
+  else
+    json=$("$BIN" guard <<<"$payload") || {
+      printf 'FAIL bin guard crashed on: %s\n' "$3" >&2
+      fail=1
+      return
+    }
+  fi
   jq -r '.hookSpecificOutput.permissionDecision // empty' <<<"$json" || {
-    printf 'FAIL guard printed no JSON on: %s\n' "$2" >&2
+    printf 'FAIL %s guard printed bad JSON on: %s\n' "$mode" "$3" >&2
     fail=1
   }
 }
 
 expect() {
-  local want=$1 tool=$2 json=$3 label=$4 got
-  got=$(verdict "$tool" "$json")
-  [ -n "$got" ] || got=allow
-  if [ "$got" != "$want" ]; then
-    printf 'FAIL %s: want %s, got %s\n' "$label" "$want" "$got"
-    fail=1
-  fi
+  local want=$1 tool=$2 json=$3 label=$4 got mode
+  for mode in sh bin; do
+    got=$(verdict "$mode" "$tool" "$json")
+    [ -n "$got" ] || got=allow
+    if [ "$got" != "$want" ]; then
+      printf 'FAIL (%s) %s: want %s, got %s\n' "$mode" "$label" "$want" "$got"
+      fail=1
+    fi
+  done
 }
 
 bash_cmd() { expect "$1" Bash "$(jq -n --arg c "$2" '{command: $c}')" "$2"; }
@@ -210,44 +230,41 @@ workdir_cmd allow "cat main.rs" /tmp
 workdir_cmd allow "cat /etc/x.rs" /
 
 # OpenCode gets its own tool names in the denial reason.
-reason=$(jq -n --arg c "$WS" \
-  '{tool_name: "Read", cwd: $c, tool_input: {file_path: "src/main.rs"}}' |
-  ASTLENS_OPENCODE=1 bash "$GUARD" | jq -r '.hookSpecificOutput.permissionDecisionReason // empty')
-case "$reason" in
-  *astlens_read_symbol*) ;;
-  *) printf 'FAIL OpenCode hint: %s\n' "$reason"; fail=1 ;;
+for runner in "bash $GUARD" "$BIN guard"; do
+  reason=$(jq -n --arg c "$WS" \
+    '{tool_name: "Read", cwd: $c, tool_input: {file_path: "src/main.rs"}}' |
+    ASTLENS_OPENCODE=1 $runner | jq -r '.hookSpecificOutput.permissionDecisionReason // empty')
+  case "$reason" in
+    *astlens_read_symbol*) ;;
+    *) printf 'FAIL OpenCode hint (%s): %s\n' "$runner" "$reason"; fail=1 ;;
+  esac
+done
+
+# Native Rust Antigravity guard tracks workspace root and enforces PreToolUse without python3.
+mkdir -p "$WS/.cache/astlens"
+agy_verdict() {
+  local tool=$1 args_json=$2
+  ASTLENS_CACHE_DIR="$WS/.cache/astlens" jq -n --arg c "$WS" --arg t "$tool" --argjson a "$args_json" \
+    '{hookEventName: "PreToolUse", cwd: $c, toolCall: {name: $t, args: $a}}' |
+    ASTLENS_CACHE_DIR="$WS/.cache/astlens" "$BIN" guard --client antigravity
+}
+
+out=$(agy_verdict read_file "{\"Path\": \"$WS/src/main.rs\"}")
+[ "$(jq -r '.decision' <<<"$out")" = "deny" ] || { printf 'FAIL agy whole read: %s\n' "$out"; fail=1; }
+case "$(jq -r '.reason' <<<"$out")" in
+  *call_mcp_tool*) ;;
+  *) printf 'FAIL agy reason: %s\n' "$out"; fail=1 ;;
 esac
 
-# Antigravity adapter translates PreToolUse events and records workspace root.
-if command -v python3 >/dev/null 2>&1; then
-  AGY_DIR="$WS/agy-hooks"
-  mkdir -p "$AGY_DIR" "$WS/.cache"
-  cp "$GUARD" "$AGY_DIR/astlens-guard.sh"
-  cp "$(dirname "$GUARD")/agy-guard.py" "$AGY_DIR/agy-guard.py"
+out=$(agy_verdict read_file "{\"Path\": \"$WS/src/main.rs\", \"StartLine\": 1, \"EndLine\": 50}")
+[ "$(jq -r '.decision' <<<"$out")" = "allow" ] || { printf 'FAIL agy bounded read: %s\n' "$out"; fail=1; }
 
-  agy_verdict() {
-    local tool=$1 args_json=$2
-    XDG_CACHE_HOME="$WS/.cache" jq -n --arg c "$WS" --arg t "$tool" --argjson a "$args_json" \
-      '{hookEventName: "PreToolUse", cwd: $c, toolCall: {name: $t, args: $a}}' |
-      XDG_CACHE_HOME="$WS/.cache" python3 "$AGY_DIR/agy-guard.py"
-  }
+out=$(agy_verdict run_command '{"CommandLine": "cat src/main.rs"}')
+[ "$(jq -r '.decision' <<<"$out")" = "deny" ] || { printf 'FAIL agy cat: %s\n' "$out"; fail=1; }
 
-  out=$(agy_verdict read_file "{\"Path\": \"$WS/src/main.rs\"}")
-  [ "$(jq -r '.decision' <<<"$out")" = "deny" ] || { printf 'FAIL agy whole read: %s\n' "$out"; fail=1; }
-  case "$(jq -r '.reason' <<<"$out")" in
-    *call_mcp_tool*) ;;
-    *) printf 'FAIL agy reason: %s\n' "$out"; fail=1 ;;
-  esac
-
-  out=$(agy_verdict read_file "{\"Path\": \"$WS/src/main.rs\", \"StartLine\": 1, \"EndLine\": 50}")
-  [ "$(jq -r '.decision' <<<"$out")" = "allow" ] || { printf 'FAIL agy bounded read: %s\n' "$out"; fail=1; }
-
-  out=$(agy_verdict run_command '{"CommandLine": "cat src/main.rs"}')
-  [ "$(jq -r '.decision' <<<"$out")" = "deny" ] || { printf 'FAIL agy cat: %s\n' "$out"; fail=1; }
-
-  got_root=$(cat "$WS/.cache/astlens/antigravity_root" 2>/dev/null || true)
-  [ "$got_root" = "$WS" ] || { printf 'FAIL agy root cache: want %s, got %s\n' "$WS" "$got_root"; fail=1; }
-fi
+got_root=$(cat "$WS/.cache/astlens/antigravity_root" 2>/dev/null || true)
+want_root=$(cd "$WS" && pwd -P)
+[ "$got_root" = "$want_root" ] || { printf 'FAIL agy root cache: want %s, got %s\n' "$want_root" "$got_root"; fail=1; }
 
 ((fail)) && exit 1
 echo 'guard: all cases pass'
