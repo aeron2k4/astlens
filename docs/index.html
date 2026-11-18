@@ -1708,9 +1708,9 @@ install -m 755 target/release/astlens ~/.local/bin/astlens
           <span class="client-mode" translate="no">astlens install</span>
         </div>
         <ul>
-          <li>Writes <code translate="no">agy-mcp-bridge.py</code> and registers <code translate="no">astlens</code> in <code translate="no">~/.gemini/config/mcp_config.json</code>.</li>
-          <li>Supports MCP <code translate="no">roots/list</code>, SEP-2567 sessions, and automatic active workspace switching.</li>
-          <li>Installs <code translate="no">plugins/astlens</code> (<code translate="no">hooks.json</code>, <code translate="no">agy-guard.py</code>, <code translate="no">rules/AGENTS.md</code>).</li>
+          <li>Registers <code translate="no">astlens --serve</code> with <code translate="no">ASTLENS_CLIENT=antigravity</code> in <code translate="no">~/.gemini/config/mcp_config.json</code>.</li>
+          <li>Supports MCP <code translate="no">roots/list</code> and automatic workspace tracking via <code translate="no">antigravity_root</code> with a single native process.</li>
+          <li>Installs <code translate="no">plugins/astlens</code> (<code translate="no">hooks.json</code> calling <code translate="no">astlens guard</code>, <code translate="no">rules/AGENTS.md</code>) with zero Python or shell dependencies.</li>
         </ul>
       </div>
     </div>

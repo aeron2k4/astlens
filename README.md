@@ -107,9 +107,10 @@ To install that build instead of running it from `target`, use
 
 ### Set up the client
 
-Any of the above leaves an `astlens` on `PATH`. Then set up the client. This
-needs `jq`, `bash` when enforcing, and `python3` for Antigravity (on Windows,
-`winget install jqlang.jq`):
+Any of the above leaves an `astlens` on `PATH`. Then set up the client. Calling
+`install` for Claude Code or OpenCode needs `jq` and `bash` for their guards;
+Antigravity uses the `astlens` binary directly (on Windows, `winget install
+jqlang.jq`):
 
 ```sh
 astlens install
@@ -178,11 +179,13 @@ OpenCode (v2):
 
 Antigravity:
 
-- Writes the workspace-aware MCP stdio bridge
-  `~/.gemini/config/astlens/agy-mcp-bridge.py` and registers `mcpServers.astlens`
-  in `~/.gemini/config/mcp_config.json` (backing it up to `.json.bak`).
+- Registers `mcpServers.astlens` (`astlens --serve` with
+  `ASTLENS_CLIENT=antigravity`) directly in `~/.gemini/config/mcp_config.json`
+  (backing it up to `.json.bak`), using the native `antigravity_root` cache
+  file so a single server process tracks the active workspace automatically.
 - Writes the plugin `~/.gemini/config/plugins/astlens/` (`plugin.json`,
-  `hooks.json`, `agy-guard.py`, `astlens-guard.sh`, and `rules/AGENTS.md`).
+  `hooks.json` running `astlens guard --client antigravity`, and
+  `rules/AGENTS.md`) with no Python, `jq`, or shell dependencies.
 
 The hook and plugin block the model from reading or searching source files in
 the session's workspace the usual way, and point it to the astlens tools
@@ -208,6 +211,7 @@ directory as the workspace root.
 | `astlens update`            | Replace this binary with the latest release                  |
 | `astlens update --check`    | Only report whether a newer release exists                   |
 | `astlens doctor`            | Report the running binary and how `update` treats it         |
+| `astlens guard [--client ...]` | Run the PreToolUse guard hook over stdin                  |
 | `astlens -s`, `--serve [ROOT]` | Run the server over stdio                                 |
 | `astlens -h`, `--help`      | Show the help                                                |
 | `astlens -v`, `--version`   | Show the version                                             |
