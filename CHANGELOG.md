@@ -3,6 +3,48 @@
 All notable changes to astlens. Versions follow [Semantic Versioning](https://semver.org/).
 Each entry ends with the commits that made it.
 
+## Unreleased
+
+### Added
+
+- When started without an explicit workspace root, the server queries the MCP
+  client's `roots/list`, updates the root on `notifications/roots/list_changed`,
+  and refuses edits or unscoped walks when an implicit default lands on `/` or
+  `$HOME` (`04b71ec`).
+- C++ `.inl` and `.tcc` header implementation files are parsed as C++ and
+  covered by the guard hook (`dfe2051`).
+
+### Changed
+
+- `doctor` and `update` recommend `cargo install astlens` without `--force` when
+  upgrading a cargo-installed binary (`b6a957b`).
+- Landing page on GitHub Pages and expanded installation documentation
+  (`5967ee2`, `6c79b62`, `7a5d740`).
+
+### Fixed
+
+- `astlens update` downloads release binaries and `SHA256SUMS` from
+  `/releases/download/<tag>/` instead of `/releases/<tag>/`, which returned 404
+  (`e3e51c3`).
+- Binary installer detection canonicalizes file and directory paths the same way
+  even when the target file does not exist yet (`a2e8916`).
+- `search_text` counts newlines inside multiline regex matches and ignores the
+  empty tail after a trailing newline at EOF (`26a4a08`).
+- `PersistentStore::prune_missing` strips trailing separators and scans both `/`
+  and `\` key prefixes on every platform, and `ParseCache::get` reads uncached
+  files from a single bounded file handle (`8f80178`, `9c3ddb0`).
+- `read_file_pruned` keeps an outer callable's body when a nested definition
+  inside it is listed in `keep` (`14815fe`).
+- Go `package` clauses are ignored by `find_references` past 256-byte license
+  headers and extracted from parsed AST identifier tokens rather than comment
+  lines (`b2da9b0`, `4ac35df`).
+- `git::diff` and `git::show` reject empty or `-`-prefixed revision arguments
+  (`4cc5353`).
+- `read_file_pruned` and `codebase_map` cap `max_tokens` at 100,000, and
+  plain-text edits reject files above 16 MiB before reading (`50d628f`).
+- `astlens-guard.sh` guards `i == 0` before slicing the previous byte on a
+  leading `|` (`1217cc8`).
+
 ## 0.7.0 (2026-11-17)
 
 ### Added
