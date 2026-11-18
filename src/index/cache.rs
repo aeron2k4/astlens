@@ -33,7 +33,7 @@ use crate::index::store_format;
 /// Changes with the crate version so stale formats or grammar changes never
 /// leak into results. Bump the `-s` suffix whenever [`ParsedFile`]'s stored
 /// format or a symbol query changes between releases.
-const DB_NAME: &str = concat!("parsed-v", env!("CARGO_PKG_VERSION"), "-s20");
+const DB_NAME: &str = concat!("parsed-v", env!("CARGO_PKG_VERSION"), "-s21");
 /// Every store directory starts with this prefix.
 const DB_PREFIX: &str = "parsed-v";
 /// The files of an LMDB environment.
@@ -254,19 +254,19 @@ impl PersistentStore {
     /// fills up. Returns the number of entries removed. Paths that are not
     /// valid UTF-8 are left alone.
     pub fn prune_missing(&self, root: &Path) -> Result<usize, StoreError> {
-        let mut prefix = Self::key(root).to_vec();
         // Keys are the bytes of whichever `PathBuf` the caller holds, so the
-        // workspace may have been opened as `C:/ws`: take both separators
-        // rather than the one this platform prefers.
-        if !prefix.ends_with(b"/") && !prefix.ends_with(b"\\") {
-            let sep = std::path::MAIN_SEPARATOR as u8;
-            prefix.push(sep);
+        // workspace may have been opened as `C:/ws` or `C:\ws`: strip any
+        // trailing separator and scan both `/` and `\` prefixes.
+        let mut base = Self::key(root);
+        while let Some((&last, rest)) = base.split_last() {
+            if last == b'/' || last == b'\\' {
+                base = rest;
+            } else {
+                break;
+            }
         }
-        let mut prefixes = vec![prefix];
-        if std::path::MAIN_SEPARATOR == '/' {
-            prefixes.push([prefixes[0].as_slice(), b"\\"].concat());
-        }
-        let missing: Vec<Vec<u8>> = {
+        let prefixes = [[base, b"/"].concat(), [base, b"\\"].concat()];
+        let mut missing: Vec<Vec<u8>> = {
             let rtxn = self.env.read_txn()?;
             let mut missing = Vec::new();
             for prefix in &prefixes {
@@ -279,6 +279,8 @@ impl PersistentStore {
             }
             missing
         };
+        missing.sort_unstable();
+        missing.dedup();
         if missing.is_empty() {
             return Ok(0);
         }
@@ -977,5 +979,72 @@ mod tests {
         assert_eq!(names_bytes(), 2 * weight + 1);
         cache.invalidate(&paths[0]);
         assert_eq!(names_bytes(), weight);
+    }
+
+    #[test]
+    fn prune_handles_both_slash_and_backslash_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = PersistentStore::open(&dir.path().join("store")).unwrap();
+        let root = dir.path().join("ws");
+        let other = dir.path().join("ws-other");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&other).unwrap();
+
+        let kept = root.join("kept.rs");
+        fs::write(&kept, "fn k() {}\n").unwrap();
+        let slash_missing = format!("{}/missing_unix.rs", root.display());
+        let backslash_missing = format!("{}\\missing_win.rs", root.display());
+        let outside_slash = format!("{}/missing.rs", other.display());
+        let outside_backslash = format!("{}\\missing.rs", other.display());
+
+        let mut wtxn = store.env.write_txn().unwrap();
+        for key in [
+            kept.to_string_lossy().as_bytes(),
+            slash_missing.as_bytes(),
+            backslash_missing.as_bytes(),
+            outside_slash.as_bytes(),
+            outside_backslash.as_bytes(),
+        ] {
+            store.db.put(&mut wtxn, key, b"stub").unwrap();
+        }
+        wtxn.commit().unwrap();
+
+        assert_eq!(store.prune_missing(&root).unwrap(), 2);
+        let rtxn = store.env.read_txn().unwrap();
+        assert!(
+            store
+                .db
+                .get(&rtxn, PersistentStore::key(&kept))
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            store
+                .db
+                .get(&rtxn, slash_missing.as_bytes())
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            store
+                .db
+                .get(&rtxn, backslash_missing.as_bytes())
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            store
+                .db
+                .get(&rtxn, outside_slash.as_bytes())
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            store
+                .db
+                .get(&rtxn, outside_backslash.as_bytes())
+                .unwrap()
+                .is_some()
+        );
     }
 }
