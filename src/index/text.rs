@@ -99,6 +99,9 @@ pub fn search_text(
         // `limit` of the hits kept overall, so the others need not be stored.
         // Their text waits until the kept hits are known: one short line per
         // hit over thousands of files adds up.
+        if source.is_empty() {
+            return Vec::new();
+        }
         let path: Arc<str> = slash_path(rel).into();
         let mut kept: Vec<(Arc<str>, usize, usize)> = Vec::new();
         let mut matched = 0;
@@ -106,11 +109,14 @@ pub fn search_text(
         let mut line = 1;
         let mut counted = 0;
         for m in re.find_iter(&source) {
+            if m.start() == source.len() && source.ends_with('\n') {
+                break;
+            }
             // Carried on from the end of the previous match, so a run of
             // matches inside one line does not rescan that line each time.
-            let from = counted;
-            line += source[from..m.start()].matches('\n').count();
-            counted = counted.max(m.end());
+            if m.start() > counted {
+                line += source[counted..m.start()].matches('\n').count();
+            }
             if last_line != line {
                 last_line = line;
                 matched += 1;
@@ -118,6 +124,13 @@ pub fn search_text(
                     kept.push((Arc::clone(&path), line, m.start()));
                 }
             }
+            if m.end() > m.start() {
+                let from = counted.max(m.start());
+                if m.end() > from {
+                    line += source[from..m.end()].matches('\n').count();
+                }
+            }
+            counted = counted.max(m.end());
         }
         total.fetch_add(matched, Ordering::Relaxed);
         kept
@@ -297,5 +310,77 @@ mod tests {
             [(2, "two".into()), (3, "three".into())]
         );
         assert!(context_lines(src, 0, 1, 0).is_empty());
+    }
+
+    #[test]
+    fn multiline_matches_keep_later_line_numbers_accurate() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("a.rs"), "fn\nalpha() { target(); }\ntarget();\n").unwrap();
+        fs::write(root.join("empty.rs"), "").unwrap();
+
+        let cache = ParseCache::default();
+        let re = Regex::new(r"fn\s+\w+|target").unwrap();
+        let found = search_text(root, root, &cache, &re, &TextOptions::default());
+        let lines: Vec<_> = found
+            .hits
+            .iter()
+            .map(|h| (h.path.as_str(), h.line, h.enclosing.as_deref()))
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                ("a.rs", 1, Some("alpha")),
+                ("a.rs", 2, Some("alpha")),
+                ("a.rs", 3, None),
+            ]
+        );
+        assert_eq!(found.total, 3);
+
+        let empty_hits = search_text(
+            root,
+            &root.join("empty.rs"),
+            &cache,
+            &Regex::new("^|$").unwrap(),
+            &TextOptions::default(),
+        );
+        assert_eq!(empty_hits.total, 0);
+        assert!(empty_hits.hits.is_empty());
+    }
+
+    #[test]
+    fn end_of_line_anchor_does_not_add_a_phantom_line_at_eof() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("with_nl.txt"), "a\nb\n").unwrap();
+        fs::write(root.join("no_nl.txt"), "a\nb").unwrap();
+
+        let cache = ParseCache::default();
+        let opts = TextOptions {
+            context: 1,
+            ..Default::default()
+        };
+        for file in ["with_nl.txt", "no_nl.txt"] {
+            for pat in ["(?m)$", r"\z"] {
+                let found = search_text(
+                    root,
+                    &root.join(file),
+                    &cache,
+                    &Regex::new(pat).unwrap(),
+                    &opts,
+                );
+                for hit in &found.hits {
+                    assert!(
+                        hit.context.iter().any(|(n, _)| *n == hit.line),
+                        "{file} {pat}: missing line {} in {:?}",
+                        hit.line,
+                        hit.context
+                    );
+                }
+                if pat == "(?m)$" {
+                    assert_eq!(found.total, 2, "{file} {pat}");
+                }
+            }
+        }
     }
 }
