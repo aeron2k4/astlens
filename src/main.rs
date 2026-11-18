@@ -39,14 +39,14 @@ fn init_tracing() {
         .init();
 }
 
-fn workspace_root(arg: Option<PathBuf>) -> Result<PathBuf> {
+fn workspace_root(arg: Option<PathBuf>) -> Result<(PathBuf, bool)> {
     if let Some(arg) = arg {
-        return Ok(arg);
+        return Ok((arg, true));
     }
-    if let Some(env) = std::env::var_os("ASTLENS_ROOT") {
-        return Ok(env.into());
+    if let Some(env) = std::env::var_os("ASTLENS_ROOT").filter(|v| !v.is_empty()) {
+        return Ok((env.into(), true));
     }
-    Ok(std::env::current_dir()?)
+    Ok((std::env::current_dir()?, false))
 }
 
 fn cache_dir() -> Option<PathBuf> {
@@ -91,8 +91,9 @@ fn with_persistence(workspace: Workspace) -> (Workspace, Option<JoinHandle<()>>)
     match PersistentStore::open(&dir) {
         Ok(store) => {
             tracing::info!(dir = %dir.display(), "persistent cache enabled");
-            let sweep = prune_in_background(store.clone(), workspace.root().to_path_buf());
-            (workspace.with_store(store), Some(sweep))
+            let sweep = (!workspace.has_broad_implicit_root())
+                .then(|| prune_in_background(store.clone(), workspace.root()));
+            (workspace.with_store(store), sweep)
         }
         Err(err) => {
             tracing::warn!(%err, "persistent cache unavailable, using memory only");
@@ -126,7 +127,14 @@ fn main() -> Result<()> {
 #[tokio::main]
 async fn serve(root: Option<PathBuf>) -> Result<()> {
     init_tracing();
-    let (persisted, sweep) = with_persistence(Workspace::new(workspace_root(root)?)?);
+    let (root, explicit) = workspace_root(root)?;
+    let base = Workspace::new(root)?;
+    let base = if explicit {
+        base
+    } else {
+        base.with_implicit_root()
+    };
+    let (persisted, sweep) = with_persistence(base);
     let mut workspace = persisted.with_libraries(libraries::default_roots());
     if let Some(max) = std::env::var("ASTLENS_MAX_FILES")
         .ok()
@@ -145,6 +153,13 @@ async fn serve(root: Option<PathBuf>) -> Result<()> {
         root = %workspace.root().display(),
         "astlens starting"
     );
+    if workspace.has_broad_implicit_root() {
+        tracing::warn!(
+            root = %workspace.root().display(),
+            "no explicit root given and working directory is broad; writes and unscoped walks \
+             are disabled unless the MCP client supplies roots"
+        );
+    }
 
     let service = AstLens::new(workspace)
         .serve(rmcp::transport::stdio())

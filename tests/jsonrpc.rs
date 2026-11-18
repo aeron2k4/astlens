@@ -28,7 +28,42 @@ impl Client {
             assert!(n > 0, "server closed the stream");
             let msg: Value = serde_json::from_str(&line).expect("server wrote invalid JSON");
             assert_eq!(msg["jsonrpc"], "2.0");
-            if msg["id"] == id {
+            if msg.get("method").is_none() && msg["id"] == id {
+                return msg;
+            }
+        }
+    }
+
+    async fn read_message(&mut self) -> Value {
+        let mut line = String::new();
+        let n = self.reader.read_line(&mut line).await.unwrap();
+        assert!(n > 0, "server closed the stream");
+        let msg: Value = serde_json::from_str(&line).expect("server wrote invalid JSON");
+        assert_eq!(msg["jsonrpc"], "2.0");
+        msg
+    }
+
+    async fn call_handling_roots(
+        &mut self,
+        id: i64,
+        method: &str,
+        params: Value,
+        roots: &[Value],
+    ) -> Value {
+        self.send(json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))
+            .await;
+        loop {
+            let msg = self.read_message().await;
+            if msg.get("method").and_then(Value::as_str) == Some("roots/list") {
+                self.send(json!({
+                    "jsonrpc": "2.0",
+                    "id": msg["id"],
+                    "result": {"roots": roots}
+                }))
+                .await;
+                continue;
+            }
+            if msg.get("method").is_none() && msg["id"] == id {
                 return msg;
             }
         }
@@ -393,6 +428,115 @@ async fn mcp_session_over_jsonrpc() {
     assert!(unknown_tool["error"].is_object(), "{unknown_tool}");
     let unknown_method = client.call(31, "no/such/method", json!({})).await;
     assert_eq!(unknown_method["error"]["code"], -32601, "{unknown_method}");
+
+    drop(client);
+    handle.await.unwrap();
+}
+
+fn path_to_file_uri(path: &std::path::Path) -> String {
+    let s = path.to_string_lossy().replace('\\', "/");
+    if s.starts_with('/') {
+        format!("file://{s}")
+    } else {
+        format!("file:///{s}")
+    }
+}
+
+#[tokio::test]
+async fn mcp_roots_override_implicit_workspace_and_update_on_change() {
+    let dir_a = tempfile::tempdir().unwrap();
+    let dir_b = tempfile::tempdir().unwrap();
+    fs::write(dir_a.path().join("alpha.py"), "def alpha(): pass\n").unwrap();
+    fs::write(dir_b.path().join("beta.py"), "def beta(): pass\n").unwrap();
+
+    let fs_root = dir_a
+        .path()
+        .canonicalize()
+        .unwrap()
+        .ancestors()
+        .last()
+        .unwrap()
+        .to_path_buf();
+    let (server_io, client_io) = tokio::io::duplex(64 * 1024);
+    let server = AstLens::new(Workspace::new(fs_root).unwrap().with_implicit_root());
+    let handle = tokio::spawn(async move {
+        server
+            .serve(server_io)
+            .await
+            .unwrap()
+            .waiting()
+            .await
+            .unwrap();
+    });
+
+    let (r, w) = tokio::io::split(client_io);
+    let mut client = Client {
+        writer: w,
+        reader: BufReader::new(r),
+    };
+
+    let init = client
+        .call(
+            1,
+            "initialize",
+            json!({
+                "protocolVersion": "2025-06-18",
+                "capabilities": {"roots": {"listChanged": true}},
+                "clientInfo": {"name": "test", "version": "0"}
+            }),
+        )
+        .await;
+    assert_eq!(init["result"]["serverInfo"]["name"], "astlens");
+    client
+        .send(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
+        .await;
+
+    let roots_a = vec![json!({"uri": path_to_file_uri(dir_a.path())})];
+    let listed = client
+        .call_handling_roots(
+            2,
+            "tools/call",
+            json!({"name": "list_files", "arguments": {}}),
+            &roots_a,
+        )
+        .await;
+    assert_ne!(listed["result"]["isError"], true, "{listed}");
+    assert_eq!(tool_text(&listed), "alpha.py\n");
+
+    let roots_b = vec![json!({"uri": path_to_file_uri(dir_b.path())})];
+    client
+        .send(json!({"jsonrpc": "2.0", "method": "notifications/roots/list_changed"}))
+        .await;
+    loop {
+        let msg = client.read_message().await;
+        if msg.get("method").and_then(Value::as_str) == Some("roots/list") {
+            client
+                .send(json!({
+                    "jsonrpc": "2.0",
+                    "id": msg["id"],
+                    "result": {"roots": roots_b}
+                }))
+                .await;
+            break;
+        }
+    }
+
+    let mut last_text = String::new();
+    for id in 3..25 {
+        let resp = client
+            .call(
+                id,
+                "tools/call",
+                json!({"name": "list_files", "arguments": {}}),
+            )
+            .await;
+        last_text = tool_text(&resp).to_string();
+        if last_text == "beta.py\n" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(last_text, "beta.py\n");
 
     drop(client);
     handle.await.unwrap();

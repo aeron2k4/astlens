@@ -48,13 +48,25 @@ const MAX_LIST_LIMIT: usize = 20000;
 /// Says what an empty result of a symbol search did not cover.
 const UNSEARCHED_NOTE: &str = "… not searched: hidden files, non-UTF-8 files, files over 2 MB\n";
 
+#[derive(Clone)]
+struct RootState {
+    path: PathBuf,
+    /// False only when defaulted to `current_dir()` without CLI arg,
+    /// `ASTLENS_ROOT`, or MCP `roots/list`.
+    explicit: bool,
+}
+
 pub struct Workspace {
-    root: PathBuf,
+    root: std::sync::RwLock<RootState>,
+    allows_client_roots: bool,
     cache: ParseCache,
     max_files: usize,
-    /// Canonical directories of dependency sources outside the root, which
-    /// the read-only tools may open too.
+    /// Canonical directories of dependency sources outside the current root,
+    /// which the read-only tools may open too.
     libraries: Vec<PathBuf>,
+    /// All valid canonical dependency directories, recomputed against `root`
+    /// when MCP `roots/list` narrows an implicit root.
+    all_libraries: Vec<PathBuf>,
 }
 
 impl Workspace {
@@ -64,19 +76,42 @@ impl Workspace {
             .canonicalize()
             .with_context(|| format!("invalid workspace root {}", root.display()))?;
         Ok(Workspace {
-            root,
+            root: std::sync::RwLock::new(RootState {
+                path: root,
+                explicit: true,
+            }),
+            allows_client_roots: false,
             cache: ParseCache::default(),
             max_files: index::DEFAULT_MAX_FILES,
             libraries: Vec::new(),
+            all_libraries: Vec::new(),
         })
+    }
+
+    /// Mark the initial root as an implicit default (`current_dir()`), so
+    /// MCP client `roots/list` may replace it and overly broad directories such
+    /// as `$HOME` or `/` require explicit scoping.
+    pub fn with_implicit_root(mut self) -> Self {
+        self.root
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .explicit = false;
+        self.allows_client_roots = true;
+        self
     }
 
     /// Let the read-only tools open files under `dirs` as well, by absolute
     /// or `~/` path. Missing directories and those inside the root are left
     /// out.
     pub fn with_libraries(mut self, dirs: impl IntoIterator<Item = PathBuf>) -> Self {
-        self.libraries = libraries::existing(dirs);
-        self.libraries.retain(|dir| !dir.starts_with(&self.root));
+        let root = self.root();
+        let all = libraries::existing(dirs);
+        self.libraries = all
+            .iter()
+            .filter(|dir| !dir.starts_with(&root))
+            .cloned()
+            .collect();
+        self.all_libraries = all;
         self
     }
 
@@ -112,38 +147,88 @@ impl Workspace {
         self
     }
 
-    pub fn root(&self) -> &Path {
-        &self.root
+    fn root_state(&self) -> RootState {
+        self.root
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    pub fn root(&self) -> PathBuf {
+        self.root_state().path
+    }
+
+    pub fn allows_client_roots(&self) -> bool {
+        self.allows_client_roots
+    }
+
+    pub fn has_broad_implicit_root(&self) -> bool {
+        let state = self.root_state();
+        !state.explicit && is_broad_root(&state.path)
+    }
+
+    /// Update the workspace root from MCP client `roots/list` or
+    /// `notifications/roots/list_changed`, marking it explicit.
+    pub fn set_client_root(&self, root: impl Into<PathBuf>) -> Result<PathBuf> {
+        let raw = root.into();
+        let canonical = raw
+            .canonicalize()
+            .with_context(|| format!("invalid workspace root {}", raw.display()))?;
+        if !canonical.is_dir() {
+            bail!("workspace root is not a directory: {}", canonical.display());
+        }
+        let mut state = self
+            .root
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.path = canonical.clone();
+        state.explicit = true;
+        tracing::info!(root = %canonical.display(), "workspace root updated from MCP client");
+        Ok(canonical)
+    }
+
+    fn require_scoped_root(&self, state: &RootState) -> Result<()> {
+        if !state.explicit && is_broad_root(&state.path) {
+            bail!(
+                "workspace root defaulted to {}; pass `dir` to narrow the scope, or start \
+                 astlens with --serve <ROOT> / ASTLENS_ROOT",
+                index::slash_path(&state.path)
+            );
+        }
+        Ok(())
     }
 
     /// Resolve a user-supplied path for a write, refusing anything outside
-    /// the root.
-    fn resolve(&self, rel: &str) -> Result<PathBuf> {
-        let path = self.canonical(rel)?;
-        if !path.starts_with(&self.root) {
-            if self.in_library(&path) {
+    /// the root or inside an implicit broad root (`$HOME` / `/`).
+    fn resolve_write(&self, rel: &str) -> Result<(PathBuf, PathBuf)> {
+        let state = self.root_state();
+        if !state.explicit && is_broad_root(&state.path) {
+            bail!(
+                "refusing to edit files because workspace root defaulted to {}; pass --serve \
+                 <ROOT> or set ASTLENS_ROOT",
+                index::slash_path(&state.path)
+            );
+        }
+        let path = canonical_in(&state.path, rel)?;
+        if !path.starts_with(&state.path) {
+            if self.in_library(&state.path, &path) {
                 bail!("{rel} is a library source: it can be read, not edited");
             }
             bail!("path escapes the workspace root: {rel}");
         }
-        Ok(path)
+        Ok((state.path, path))
     }
 
-    /// Resolve a user-supplied path for a read: inside the root, or inside
-    /// one of the library directories.
-    fn resolve_read(&self, rel: &str) -> Result<PathBuf> {
-        let path = self.canonical(rel)?;
-        if path.starts_with(&self.root) || self.in_library(&path) {
+    fn resolve_read_in(&self, root: &Path, rel: &str) -> Result<PathBuf> {
+        let path = canonical_in(root, rel)?;
+        if path.starts_with(root) || self.in_library(root, &path) {
             return Ok(path);
         }
-        if self.libraries.is_empty() {
+        let libs = self.external_libraries(root);
+        if libs.is_empty() {
             bail!("path escapes the workspace root: {rel}");
         }
-        let dirs: Vec<String> = self
-            .libraries
-            .iter()
-            .map(|d| index::slash_path(d))
-            .collect();
+        let dirs: Vec<String> = libs.iter().map(|d| index::slash_path(d)).collect();
         bail!(
             "path escapes the workspace root: {rel}; outside it only library sources can be \
              read, under {}",
@@ -151,36 +236,53 @@ impl Workspace {
         )
     }
 
-    fn in_library(&self, path: &Path) -> bool {
-        self.libraries.iter().any(|dir| path.starts_with(dir))
+    /// Resolve a user-supplied path for a read: inside the root, or inside
+    /// one of the library directories.
+    fn resolve_read(&self, rel: &str) -> Result<(PathBuf, PathBuf)> {
+        let root = self.root();
+        let path = self.resolve_read_in(&root, rel)?;
+        Ok((root, path))
     }
 
-    /// `rel` joined to the root, or taken as given when absolute, with a
-    /// leading `~/` standing for the home directory; then canonicalized.
-    fn canonical(&self, rel: &str) -> Result<PathBuf> {
-        let rel = rel.trim();
-        let home = rel.strip_prefix("~/").and_then(|rest| {
-            std::env::var_os("HOME")
-                .or_else(|| std::env::var_os("USERPROFILE"))
-                .map(|home| PathBuf::from(home).join(rest))
-        });
-        let joined = home.unwrap_or_else(|| self.root.join(rel));
-        joined
-            .canonicalize()
-            .with_context(|| format!("no such path: {rel}"))
+    fn external_libraries(&self, root: &Path) -> Vec<PathBuf> {
+        let source = if self.all_libraries.is_empty() {
+            &self.libraries
+        } else {
+            &self.all_libraries
+        };
+        source
+            .iter()
+            .filter(|dir| !dir.starts_with(root))
+            .cloned()
+            .collect()
+    }
+
+    fn in_library(&self, root: &Path, path: &Path) -> bool {
+        let source = if self.all_libraries.is_empty() {
+            &self.libraries
+        } else {
+            &self.all_libraries
+        };
+        source
+            .iter()
+            .any(|dir| !dir.starts_with(root) && path.starts_with(dir))
+    }
+
+    fn display_in(&self, root: &Path, path: &Path) -> String {
+        index::slash_path(path.strip_prefix(root).unwrap_or(path))
     }
 
     fn display(&self, path: &Path) -> String {
-        index::slash_path(path.strip_prefix(&self.root).unwrap_or(path))
+        self.display_in(&self.root(), path)
     }
 
     pub fn outline(&self, rel: &str, max_depth: Option<usize>) -> Result<String> {
-        let path = self.resolve_read(rel)?;
+        let (root, path) = self.resolve_read(rel)?;
         let file = self.cache.get(&path)?;
         let parsed = &file.parsed;
         let mut out = format!(
             "{} ({}, {} lines, {} symbols{}{})\n",
-            self.display(&path),
+            self.display_in(&root, &path),
             parsed.lang.name(),
             file.source.lines().count(),
             parsed.symbols.len(),
@@ -203,12 +305,37 @@ impl Workspace {
     }
 
     pub fn search(&self, query: &str, kind: Option<SymbolKind>, limit: usize) -> String {
+        let state = self.root_state();
+        if let Err(err) = self.require_scoped_root(&state) {
+            return format!("{err}\n");
+        }
+        self.search_in(&state.path, query, kind, limit)
+    }
+
+    fn search_checked(
+        &self,
+        query: &str,
+        kind: Option<SymbolKind>,
+        limit: usize,
+    ) -> Result<String> {
+        let state = self.root_state();
+        self.require_scoped_root(&state)?;
+        Ok(self.search_in(&state.path, query, kind, limit))
+    }
+
+    fn search_in(
+        &self,
+        root: &Path,
+        query: &str,
+        kind: Option<SymbolKind>,
+        limit: usize,
+    ) -> String {
         let opts = SearchOptions {
             kind,
             limit: limit.min(MAX_HIT_LIMIT),
             max_files: self.max_files,
         };
-        let hits = index::search_symbols(&self.root, &self.cache, query, &opts);
+        let hits = index::search_symbols(root, &self.cache, query, &opts);
         let mut note = self.truncation_note(hits.truncated);
         if hits.incomplete > 0 {
             let _ = writeln!(
@@ -238,7 +365,7 @@ impl Workspace {
     }
 
     pub fn read_symbol(&self, rel: &str, name: &str) -> Result<String> {
-        let path = self.resolve_read(rel)?;
+        let (root, path) = self.resolve_read(rel)?;
         let file = self.cache.get(&path)?;
         let name = name.trim();
         let matches: Vec<_> = file
@@ -267,7 +394,7 @@ impl Workspace {
             let _ = writeln!(
                 out,
                 "// {}:{}-{} [{}] {}",
-                self.display(&path),
+                self.display_in(&root, &path),
                 first_line,
                 sym.end_line,
                 sym.kind.as_str(),
@@ -302,7 +429,7 @@ impl Workspace {
         line: Option<usize>,
         new_source: &str,
     ) -> Result<String> {
-        let path = self.resolve(rel)?;
+        let (root, path) = self.resolve_write(rel)?;
         let (source, parsed) = self.read_fresh(&path)?;
         let parsed = self.symbols_needed(&path, parsed)?;
         let sym = unique_symbol(&parsed, rel, name, line)?;
@@ -335,7 +462,7 @@ impl Workspace {
             "replaced {} [{}] in {}: lines {}-{} are now {} lines starting at line {}\n",
             sym.qualified_name(),
             sym.kind.as_str(),
-            self.display(&path),
+            self.display_in(&root, &path),
             first_line,
             sym.end_line,
             new_lines,
@@ -358,7 +485,7 @@ impl Workspace {
         expect: &str,
         new_source: &str,
     ) -> Result<String> {
-        let path = self.resolve(rel)?;
+        let (root, path) = self.resolve_write(rel)?;
         let (source, parsed) = self.read_fresh(&path)?;
         let starts = line_starts(&source);
         if start == 0 || end < start {
@@ -367,7 +494,7 @@ impl Workspace {
         if end > starts.len() {
             bail!(
                 "{} has {} lines; asked for {start}-{end}",
-                self.display(&path),
+                self.display_in(&root, &path),
                 starts.len()
             );
         }
@@ -377,7 +504,7 @@ impl Workspace {
         if !lines_match(current, expect) {
             bail!(
                 "not written: {} lines {start}-{end} are not what `expect` says; they are:\n{}",
-                self.display(&path),
+                self.display_in(&root, &path),
                 excerpt(current, start)
             );
         }
@@ -390,7 +517,7 @@ impl Workspace {
             })?;
             return Ok(format!(
                 "{}: deleted lines {start}-{end}; {kept} lines left\n",
-                self.display(&path)
+                self.display_in(&root, &path)
             ));
         }
 
@@ -413,7 +540,7 @@ impl Workspace {
         let counted = if added == 1 { "line" } else { "lines" };
         Ok(format!(
             "{}: lines {start}-{end} are now {added} {counted}\n",
-            self.display(&path)
+            self.display_in(&root, &path)
         ))
     }
 
@@ -424,7 +551,7 @@ impl Workspace {
     /// with syntax errors the file did not have. The file is re-read rather
     /// than taken from the cache.
     pub fn replace_text(&self, rel: &str, edits: &[TextEdit]) -> Result<String> {
-        let path = self.resolve(rel)?;
+        let (root, path) = self.resolve_write(rel)?;
         if edits.is_empty() {
             bail!("no edits given");
         }
@@ -453,7 +580,7 @@ impl Workspace {
                 [found] => found,
                 [] => bail!(
                     "not written: edit {n}: old_text is not in {}{}",
-                    self.display(&path),
+                    self.display_in(&root, &path),
                     near_miss(&updated, &old)
                 ),
                 _ => {
@@ -471,7 +598,7 @@ impl Workspace {
                         "not written: edit {n}: old_text occurs {} times in {}, at lines {}{more}; \
                          include surrounding text to pick one",
                         found.len(),
-                        self.display(&path),
+                        self.display_in(&root, &path),
                         lines.join(", ")
                     )
                 }
@@ -503,7 +630,7 @@ impl Workspace {
         };
         Ok(format!(
             "{}: applied {edited}, at {at} {}\n",
-            self.display(&path),
+            self.display_in(&root, &path),
             lines.join(", ")
         ))
     }
@@ -515,9 +642,9 @@ impl Workspace {
     pub fn read_lines(&self, rel: &str, start: usize, end: Option<usize>) -> Result<String> {
         use std::io::BufRead as _;
 
-        let path = self.resolve_read(rel)?;
+        let (root, path) = self.resolve_read(rel)?;
         if !path.is_file() {
-            bail!("{} is not a regular file", self.display(&path));
+            bail!("{} is not a regular file", self.display_in(&root, &path));
         }
         if start == 0 || end.is_some_and(|end| end < start) {
             bail!(
@@ -525,7 +652,7 @@ impl Workspace {
                 end.unwrap_or(start)
             );
         }
-        let cannot_read = || format!("cannot read {}", self.display(&path));
+        let cannot_read = || format!("cannot read {}", self.display_in(&root, &path));
         let file = std::fs::File::open(&path).with_context(cannot_read)?;
         let mut reader = std::io::BufReader::new(file);
         // The last line kept; `total` may turn out lower.
@@ -559,21 +686,24 @@ impl Workspace {
                 }
             }
             let Ok(line) = std::str::from_utf8(&buf) else {
-                bail!("{} line {total} is not valid UTF-8", self.display(&path));
+                bail!(
+                    "{} line {total} is not valid UTF-8",
+                    self.display_in(&root, &path)
+                );
             };
             kept.push(line.to_string());
         }
         if start > total {
             bail!(
                 "{} has {total} lines; asked for line {start}",
-                self.display(&path)
+                self.display_in(&root, &path)
             );
         }
         let wanted = end.unwrap_or(usize::MAX).min(total);
         let last = wanted.min(kept_until);
         let mut out = format!(
             "// {}:{start}-{last} of {total} lines\n",
-            self.display(&path)
+            self.display_in(&root, &path)
         );
         for (i, line) in kept.iter().enumerate() {
             let _ = writeln!(out, "{}\t{line}", start + i);
@@ -601,7 +731,7 @@ impl Workspace {
         anchor: Option<Anchor<'_>>,
         line: Option<usize>,
     ) -> Result<String> {
-        let path = self.resolve(rel)?;
+        let (root, path) = self.resolve_write(rel)?;
         let (source, parsed) = self.read_fresh(&path)?;
         let body = new_source
             .trim_start_matches(['\n', '\r'])
@@ -673,7 +803,7 @@ impl Workspace {
         Ok(format!(
             "inserted {} lines {place} in {}, starting at line {first_line}\n",
             body.lines().count(),
-            self.display(&path),
+            self.display_in(&root, &path),
         ))
     }
 
@@ -746,22 +876,22 @@ impl Workspace {
     }
 
     pub fn read_pruned(&self, rel: &str, max_tokens: usize, keep: Vec<String>) -> Result<String> {
-        let path = self.resolve_read(rel)?;
+        let (root, path) = self.resolve_read(rel)?;
         let result = if parser::Lang::from_path(&path).is_some() {
             let file = self.cache.get(&path)?;
             let opts = PruneOptions { max_tokens, keep };
             pruner::prune(file.parsed.lang, &file.source, &file.parsed.symbols, &opts)
         } else {
             if !path.is_file() {
-                bail!("{} is not a regular file", self.display(&path));
+                bail!("{} is not a regular file", self.display_in(&root, &path));
             }
             let source = read_start(&path, max_tokens)
-                .with_context(|| format!("cannot read {}", self.display(&path)))?;
+                .with_context(|| format!("cannot read {}", self.display_in(&root, &path)))?;
             pruner::prune_plain(&source, max_tokens)
         };
         let mut out = format!(
             "// {} | strategy={} | ~{}/{} tokens",
-            self.display(&path),
+            self.display_in(&root, &path),
             serde_json::to_value(result.strategy)?
                 .as_str()
                 .unwrap_or_default(),
@@ -776,23 +906,26 @@ impl Workspace {
         Ok(out)
     }
 
-    /// Resolve an optional sub-directory or file, defaulting to the root. A
-    /// path inside the root comes back relative to it, as the file walkers expect:
-    /// an absolute path makes their results absolute too, and the cache,
-    /// which is keyed by `root.join(rel)`, then misses every file. A library
-    /// directory comes back absolute, and so do the files found under it.
-    fn resolve_dir(&self, dir: Option<&str>) -> Result<PathBuf> {
-        let base = match dir {
-            Some(d) if !d.trim().is_empty() => self.resolve_read(d)?,
-            _ => self.root.clone(),
+    /// Resolve an optional sub-directory or file, defaulting to the root.
+    fn resolve_dir(&self, dir: Option<&str>) -> Result<(PathBuf, PathBuf)> {
+        let state = self.root_state();
+        let (root, base) = match dir {
+            Some(d) if !d.trim().is_empty() => {
+                let path = self.resolve_read_in(&state.path, d)?;
+                (state.path, path)
+            }
+            _ => {
+                self.require_scoped_root(&state)?;
+                (state.path.clone(), state.path)
+            }
         };
         if !base.exists() {
-            bail!("no such file or directory: {}", self.display(&base));
+            bail!(
+                "no such file or directory: {}",
+                self.display_in(&root, &base)
+            );
         }
-        Ok(base
-            .strip_prefix(&self.root)
-            .map(Path::to_path_buf)
-            .unwrap_or(base))
+        Ok((root, base))
     }
 
     pub fn find_references(
@@ -802,14 +935,14 @@ impl Workspace {
         include_definitions: bool,
         limit: usize,
     ) -> Result<String> {
-        let base = self.root.join(self.resolve_dir(dir)?);
+        let (root, base) = self.resolve_dir(dir)?;
         let limit = limit.min(MAX_HIT_LIMIT);
         let opts = RefOptions {
             include_definitions,
             max_files: self.max_files,
             limit,
         };
-        let hits = refs::find_references(&self.root, &base, &self.cache, name, &opts);
+        let hits = refs::find_references(&root, &base, &self.cache, name, &opts);
         let note = self.truncation_note(hits.truncated);
         if hits.is_empty() {
             return Ok(format!(
@@ -842,13 +975,13 @@ impl Workspace {
         max_tokens: usize,
         focus: Vec<String>,
     ) -> Result<String> {
-        let base = self.root.join(self.resolve_dir(dir)?);
+        let (root, base) = self.resolve_dir(dir)?;
         let opts = MapOptions {
             max_tokens: max_tokens.max(1),
             focus,
             max_files: self.max_files,
         };
-        Ok(map::codebase_map(&self.root, &base, &self.cache, &opts))
+        Ok(map::codebase_map(&root, &base, &self.cache, &opts))
     }
 
     pub fn search_text(
@@ -876,7 +1009,7 @@ impl Workspace {
         if pattern.is_empty() {
             bail!("pattern must not be empty");
         }
-        let base = self.root.join(self.resolve_dir(dir)?);
+        let (root, base) = self.resolve_dir(dir)?;
         let source = if regex {
             pattern.to_string()
         } else {
@@ -894,7 +1027,7 @@ impl Workspace {
             limit: limit.min(MAX_HIT_LIMIT),
             context: context.min(MAX_CONTEXT_LINES),
         };
-        let found = text::search_text(&self.root, &base, &self.cache, &re, &opts);
+        let found = text::search_text(&root, &base, &self.cache, &re, &opts);
         let mut note = self.truncation_note(found.truncated);
         if found.not_utf8 + found.oversized > 0 {
             let _ = writeln!(
@@ -934,9 +1067,9 @@ impl Workspace {
 
     pub fn list_files(&self, dir: Option<&str>, limit: usize) -> Result<String> {
         let limit = limit.min(MAX_LIST_LIMIT);
-        let base = self.root.join(self.resolve_dir(dir)?);
+        let (root, base) = self.resolve_dir(dir)?;
         if base.is_file() {
-            return Ok(format!("{}\n", self.display(&base)));
+            return Ok(format!("{}\n", self.display_in(&root, &base)));
         }
         // One more than asked for, to tell a tree of exactly `limit` files
         // from a longer one.
@@ -945,7 +1078,7 @@ impl Workspace {
         files.truncate(limit);
         let mut out = String::new();
         for f in &files {
-            let _ = writeln!(out, "{}", self.display(&base.join(f)));
+            let _ = writeln!(out, "{}", self.display_in(&root, &base.join(f)));
         }
         if more {
             let _ = writeln!(out, "… limit of {limit} files reached");
@@ -963,7 +1096,9 @@ impl Workspace {
         if base.is_empty() || base.starts_with('-') {
             bail!("invalid base revision {base:?}");
         }
-        let files = changes::changed_symbols(&self.root, DiffSpec { base, staged })?;
+        let state = self.root_state();
+        self.require_scoped_root(&state)?;
+        let files = changes::changed_symbols(&state.path, DiffSpec { base, staged })?;
         let side = if staged {
             "the index"
         } else {
@@ -1006,7 +1141,9 @@ impl Workspace {
     }
 
     pub fn git_status(&self) -> Result<String> {
-        let entries = git::status(&self.root)?;
+        let state = self.root_state();
+        self.require_scoped_root(&state)?;
+        let entries = git::status(&state.path)?;
         if entries.is_empty() {
             return Ok("working tree clean\n".into());
         }
@@ -1023,6 +1160,104 @@ impl Workspace {
         }
         Ok(out)
     }
+}
+
+/// `rel` joined to `root`, or taken as given when absolute, with a
+/// leading `~/` standing for the home directory; then canonicalized.
+fn canonical_in(root: &Path, rel: &str) -> Result<PathBuf> {
+    let rel = rel.trim();
+    let home = rel.strip_prefix("~/").and_then(|rest| {
+        std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .map(|home| PathBuf::from(home).join(rest))
+    });
+    let joined = home.unwrap_or_else(|| root.join(rel));
+    joined
+        .canonicalize()
+        .with_context(|| format!("no such path: {rel}"))
+}
+
+fn is_broad_root(path: &Path) -> bool {
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .and_then(|p| p.canonicalize().ok().or(Some(p)));
+    is_broad_root_with_home(path, home.as_deref())
+}
+
+fn is_broad_root_with_home(path: &Path, home: Option<&Path>) -> bool {
+    path.parent().is_none() || home.is_some_and(|h| h == path)
+}
+
+fn file_uri_to_path(uri: &str) -> Option<PathBuf> {
+    file_uri_to_path_for(uri, cfg!(windows))
+}
+
+fn file_uri_to_path_for(uri: &str, windows: bool) -> Option<PathBuf> {
+    let uri = uri.trim();
+    let rest = uri
+        .get(..7)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("file://"))
+        .map(|_| &uri[7..])?;
+    let rest = rest.split(['?', '#']).next().unwrap_or(rest);
+    let (raw_path, unc) = if rest.starts_with('/') {
+        (rest, false)
+    } else if let Some(after) = rest
+        .get(..9)
+        .filter(|host| host.eq_ignore_ascii_case("localhost"))
+        .map(|_| &rest[9..])
+        .filter(|after| after.is_empty() || after.starts_with('/'))
+    {
+        (after, false)
+    } else if windows && !rest.is_empty() {
+        (rest, true)
+    } else {
+        return None;
+    };
+    if raw_path.is_empty() {
+        return None;
+    }
+    let decoded = percent_decode(raw_path)?;
+    if unc {
+        return Some(PathBuf::from(format!("\\\\{}", decoded.replace('/', "\\"))));
+    }
+    if windows {
+        let bytes = decoded.as_bytes();
+        if bytes.len() >= 3
+            && bytes[0] == b'/'
+            && bytes[1].is_ascii_alphabetic()
+            && bytes[2] == b':'
+        {
+            return Some(PathBuf::from(decoded[1..].replace('/', "\\")));
+        }
+        return Some(PathBuf::from(decoded.replace('/', "\\")));
+    }
+    Some(PathBuf::from(decoded))
+}
+
+fn percent_decode(input: &str) -> Option<String> {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hi = (*bytes.get(i + 1)? as char).to_digit(16)?;
+            let lo = (*bytes.get(i + 2)? as char).to_digit(16)?;
+            let byte = ((hi << 4) | lo) as u8;
+            if byte == 0 {
+                return None;
+            }
+            out.push(byte);
+            i += 3;
+        } else {
+            if bytes[i] == 0 {
+                return None;
+            }
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
 }
 
 /// The text of `path` for a read within `max_tokens`: all of it, or only its
@@ -1527,6 +1762,7 @@ pub struct SearchTextParams {
 pub struct AstLens {
     workspace: Arc<Workspace>,
     tool_router: ToolRouter<Self>,
+    roots_sync: Arc<tokio::sync::Mutex<bool>>,
 }
 
 impl AstLens {
@@ -1549,6 +1785,43 @@ impl AstLens {
             Err(join) => Err(format!("internal error: {join}")),
         }
     }
+
+    #[allow(deprecated)]
+    async fn sync_client_roots(&self, peer: &rmcp::Peer<rmcp::RoleServer>, force: bool) {
+        if !self.workspace.allows_client_roots() {
+            return;
+        }
+        let mut synced = self.roots_sync.lock().await;
+        if *synced && !force {
+            return;
+        }
+        let Some(info) = peer.peer_info() else {
+            return;
+        };
+        *synced = true;
+        if info.capabilities.roots.is_none()
+            || info.protocol_version >= rmcp::model::ProtocolVersion::V_2026_07_28
+        {
+            return;
+        }
+        match tokio::time::timeout(std::time::Duration::from_secs(2), peer.list_roots()).await {
+            Ok(Ok(result)) => {
+                for root in &result.roots {
+                    if let Some(path) = file_uri_to_path(&root.uri)
+                        && self.workspace.set_client_root(path).is_ok()
+                    {
+                        break;
+                    }
+                }
+            }
+            Ok(Err(err)) => {
+                tracing::debug!(%err, "failed to read MCP client roots");
+            }
+            Err(_) => {
+                tracing::debug!("timed out waiting for MCP client roots/list");
+            }
+        }
+    }
 }
 
 #[tool_router]
@@ -1557,6 +1830,7 @@ impl AstLens {
         AstLens {
             workspace: Arc::new(workspace),
             tool_router: Self::tool_router(),
+            roots_sync: Arc::new(tokio::sync::Mutex::new(false)),
         }
     }
 
@@ -1589,8 +1863,10 @@ impl AstLens {
         &self,
         Parameters(p): Parameters<SearchParams>,
     ) -> Result<String, String> {
-        self.run(move |ws| Ok(ws.search(&p.query, p.kind, p.limit.unwrap_or(DEFAULT_SEARCH_LIMIT))))
-            .await
+        self.run(move |ws| {
+            ws.search_checked(&p.query, p.kind, p.limit.unwrap_or(DEFAULT_SEARCH_LIMIT))
+        })
+        .await
     }
 
     #[tool(
@@ -1848,6 +2124,28 @@ impl AstLens {
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for AstLens {
+    async fn call_tool(
+        &self,
+        request: rmcp::model::CallToolRequestParams,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
+        self.sync_client_roots(&context.peer, false).await;
+        let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
+        self.tool_router.call(tcc).await
+    }
+
+    async fn on_initialized(&self, context: rmcp::service::NotificationContext<rmcp::RoleServer>) {
+        tracing::info!("client initialized");
+        self.sync_client_roots(&context.peer, false).await;
+    }
+
+    async fn on_roots_list_changed(
+        &self,
+        context: rmcp::service::NotificationContext<rmcp::RoleServer>,
+    ) {
+        self.sync_client_roots(&context.peer, true).await;
+    }
+
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new(
@@ -3216,5 +3514,109 @@ mod tests {
         );
         let again = ws.read_lines(&shown, 3, Some(3)).unwrap();
         assert!(again.ends_with("3\t    7\n"), "{again}");
+    }
+
+    #[test]
+    fn parses_file_uris_across_platforms() {
+        assert_eq!(
+            file_uri_to_path_for("file:///home/user/repo", false),
+            Some(PathBuf::from("/home/user/repo"))
+        );
+        assert_eq!(
+            file_uri_to_path_for("file://localhost/home/user/my%20repo", false),
+            Some(PathBuf::from("/home/user/my repo"))
+        );
+        assert_eq!(
+            file_uri_to_path_for("file:///tmp/ti%E1%BA%BFng%20vi%E1%BB%87t?q=1#h", false),
+            Some(PathBuf::from("/tmp/tiếng việt"))
+        );
+        assert_eq!(
+            file_uri_to_path_for("file://other-host/home/user", false),
+            None
+        );
+        assert_eq!(file_uri_to_path_for("https://example.com/a", false), None);
+        assert_eq!(file_uri_to_path_for("file:///tmp/a%00b", false), None);
+
+        assert_eq!(
+            file_uri_to_path_for("file:///C:/Users/dev/repo", true),
+            Some(PathBuf::from(r"C:\Users\dev\repo"))
+        );
+        assert_eq!(
+            file_uri_to_path_for("file:///c%3A/Users/dev/repo", true),
+            Some(PathBuf::from(r"c:\Users\dev\repo"))
+        );
+        assert_eq!(
+            file_uri_to_path_for("file://server/share/repo", true),
+            Some(PathBuf::from(r"\\server\share\repo"))
+        );
+    }
+
+    #[test]
+    fn broad_root_detection_covers_filesystem_root_and_home() {
+        let root = PathBuf::from("/");
+        assert!(is_broad_root_with_home(&root, None));
+        let home = PathBuf::from("/home/alice");
+        assert!(is_broad_root_with_home(&home, Some(&home)));
+        assert!(!is_broad_root_with_home(&home.join("project"), Some(&home)));
+    }
+
+    #[test]
+    fn broad_implicit_root_blocks_writes_and_unscoped_walks_until_client_sets_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("project");
+        let lib = dir.path().join("dep");
+        fs::create_dir_all(&sub).unwrap();
+        fs::create_dir_all(&lib).unwrap();
+        let file = sub.join("a.rs");
+        let lib_file = lib.join("dep.rs");
+        fs::write(&file, "pub fn a() {}\n").unwrap();
+        fs::write(&lib_file, "pub fn dep() {}\n").unwrap();
+
+        let fs_root = sub
+            .canonicalize()
+            .unwrap()
+            .ancestors()
+            .last()
+            .unwrap()
+            .to_path_buf();
+        let ws = Workspace::new(&fs_root)
+            .unwrap()
+            .with_implicit_root()
+            .with_libraries([lib.clone()]);
+        assert!(ws.has_broad_implicit_root());
+
+        let file_str = file.to_string_lossy().into_owned();
+        let sub_str = sub.to_string_lossy().into_owned();
+        let lib_file_str = lib_file.to_string_lossy().into_owned();
+
+        // Unscoped workspace walks and writes are refused.
+        assert!(ws.list_files(None, 10).is_err());
+        assert!(ws.codebase_map(None, 500, vec![]).is_err());
+        assert!(ws.search_text("a", false, false, None, 10).is_err());
+        assert!(ws.find_references("a", None, false, 10).is_err());
+        assert!(ws.search_checked("a", None, 10).is_err());
+        assert!(ws.changed_symbols("HEAD", false).is_err());
+        assert!(ws.git_status().is_err());
+        let edit_err = ws
+            .replace_text(&file_str, &[text_edit("fn a", "fn b")])
+            .unwrap_err()
+            .to_string();
+        assert!(edit_err.contains("refusing to edit"), "{edit_err}");
+
+        // Explicit dir-scoped reads and single-file reads stay allowed.
+        assert!(ws.list_files(Some(&sub_str), 10).unwrap().contains("a.rs"));
+        assert!(ws.outline(&file_str, None).unwrap().contains("fn a()"));
+
+        // Setting an explicit client root lifts the guardrails and keeps external libraries usable.
+        ws.set_client_root(&sub).unwrap();
+        assert!(!ws.has_broad_implicit_root());
+        assert_eq!(ws.list_files(None, 10).unwrap(), "a.rs\n");
+        ws.replace_text("a.rs", &[text_edit("pub fn a() {}", "pub fn b() {}")])
+            .unwrap();
+        assert!(
+            ws.read_lines(&lib_file_str, 1, None)
+                .unwrap()
+                .contains("pub fn dep()")
+        );
     }
 }
