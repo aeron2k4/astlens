@@ -1615,7 +1615,7 @@ astlens install</pre>
         <div class="codeblock">
           <pre id="code-cargo" translate="no">cargo install astlens
 
-<span class="cm"># register with Claude Code / OpenCode</span>
+<span class="cm"># register with Claude Code / OpenCode / Antigravity</span>
 astlens install</pre>
           <button class="copy-btn" type="button" data-copy="code-cargo" aria-label="Copy cargo install commands">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
@@ -1657,8 +1657,8 @@ install -m 755 target/release/astlens ~/.local/bin/astlens
     </div>
 
     <div class="cmd-ledger" aria-label="CLI Command Reference" translate="no">
-      <div class="cmd-row"><div>astlens install</div><div>Detect Claude Code and OpenCode, register MCP server, hook, and instructions</div></div>
-      <div class="cmd-row"><div>astlens install --client claude</div><div>Configure only Claude Code (or pass <code translate="no">--client opencode</code>)</div></div>
+      <div class="cmd-row"><div>astlens install</div><div>Detect Claude Code, OpenCode, and Antigravity; register MCP server, hook, and instructions</div></div>
+      <div class="cmd-row"><div>astlens install --client claude</div><div>Configure one client (<code translate="no">claude</code>, <code translate="no">opencode</code>, <code translate="no">antigravity</code>, or <code translate="no">all</code>)</div></div>
       <div class="cmd-row"><div>astlens install --no-enforce</div><div>Register the MCP server without installing the PreToolUse read/grep guard</div></div>
       <div class="cmd-row"><div>astlens update [--check]</div><div>Self-update script-installed binaries via <code translate="no">/releases/download</code> and <code translate="no">SHA256SUMS</code></div></div>
       <div class="cmd-row"><div>astlens doctor</div><div>Inspect binary path, installer owner, duplicate copies, and target asset</div></div>
@@ -1705,12 +1705,12 @@ install -m 755 target/release/astlens ~/.local/bin/astlens
       <div class="client-col">
         <div class="client-head">
           <h3>Antigravity</h3>
-          <span class="client-mode" translate="no">~/.gemini/config</span>
+          <span class="client-mode" translate="no">astlens install</span>
         </div>
         <ul>
-          <li>Add <code translate="no">astlens</code> under <code translate="no">~/.gemini/config/mcp_config.json</code> using stdio <code translate="no">astlens --serve</code>.</li>
-          <li>Supports MCP <code translate="no">roots/list</code> and <code translate="no">roots/list_changed</code> sync plus <code translate="no">/</code> and <code translate="no">$HOME</code> root guards.</li>
-          <li>Pair with plugin <code translate="no">rules/AGENTS.md</code> and a <code translate="no">PreToolUse</code> guard hook.</li>
+          <li>Writes <code translate="no">agy-mcp-bridge.py</code> and registers <code translate="no">astlens</code> in <code translate="no">~/.gemini/config/mcp_config.json</code>.</li>
+          <li>Supports MCP <code translate="no">roots/list</code>, SEP-2567 sessions, and automatic active workspace switching.</li>
+          <li>Installs <code translate="no">plugins/astlens</code> (<code translate="no">hooks.json</code>, <code translate="no">agy-guard.py</code>, <code translate="no">rules/AGENTS.md</code>).</li>
         </ul>
       </div>
     </div>
@@ -2096,19 +2096,19 @@ install -m 755 target/release/astlens ~/.local/bin/astlens
   var TOOLS = [
     { name: "codebase_map", cat: "map", mode: "ro", modeLabel: "read-only", desc: "PageRank map of the symbols other files rely on most, bounded by max_tokens (default 2,000, max 100,000) and optional focus." },
     { name: "get_file_outline", cat: "map", mode: "ro", modeLabel: "read-only", desc: "List symbols in a file with signatures and line ranges; optional max_depth=0 for top-level only." },
-    { name: "search_symbols", cat: "map", mode: "ro", modeLabel: "read-only", desc: "Ranked definition search across the workspace (exact > case-insensitive > prefix > substring)." },
+    { name: "search_symbols", cat: "map", mode: "ro", modeLabel: "read-only", desc: "Ranked definition search across the workspace or optional dir/library (exact > case-insensitive > prefix > substring)." },
     { name: "find_references", cat: "map", mode: "ro", modeLabel: "read-only", desc: "Locate identifier token uses in source files while skipping comments and string literals." },
     { name: "search_text", cat: "map", mode: "ro", modeLabel: "read-only", desc: "Literal or regex text search respecting .gitignore, showing enclosing symbol and line context." },
     { name: "list_files", cat: "map", mode: "ro", modeLabel: "read-only", desc: "Walk workspace or library directory files, respecting .gitignore and hidden-file rules." },
-    { name: "read_symbol", cat: "read", mode: "ro", modeLabel: "read-only", desc: "Return the full line-numbered source of one symbol definition, including attached doc comments." },
+    { name: "read_symbol", cat: "read", mode: "ro", modeLabel: "read-only", desc: "Return line-numbered source of one or more symbols (`name` or batch `names`) in one lookup, including attached doc comments." },
     { name: "read_lines", cat: "read", mode: "ro", modeLabel: "read-only", desc: "Read a 1-based inclusive line range (capped at 400 lines per call), including plain-text and library files." },
     { name: "read_file_pruned", cat: "read", mode: "ro", modeLabel: "read-only", desc: "Shrink a file to max_tokens cleanly: Full → ElidedBodies (preserving kept & nested symbols) → Outline → Truncated." },
     { name: "replace_symbol", cat: "edit", mode: "safe-edit", modeLabel: "syntax-checked", desc: "Rewrite or delete one symbol without prior read; aborts atomic write if new syntax errors are introduced." },
     { name: "replace_text", cat: "edit", mode: "safe-edit", modeLabel: "syntax-checked", desc: "Apply ordered exact-text replacements atomically; guarded by tree-sitter check and 16 MiB plain-text cap." },
     { name: "replace_lines", cat: "edit", mode: "safe-edit", modeLabel: "syntax-checked", desc: "Swap or delete lines [start..end] guarded by an exact expect check so stale line numbers cannot corrupt code." },
     { name: "insert_symbol", cat: "edit", mode: "safe-edit", modeLabel: "additive", desc: "Insert a new definition before or after a named symbol (or at file end), verified by tree-sitter before write." },
-    { name: "changed_symbols", cat: "git", mode: "ro", modeLabel: "read-only", desc: "Group uncommitted working-tree or staged git diffs by affected AST symbol (added, modified, removed)." },
-    { name: "git_status", cat: "git", mode: "ro", modeLabel: "read-only", desc: "Report concise workspace git working-tree status scoped under the active root." }
+    { name: "changed_symbols", cat: "git", mode: "ro", modeLabel: "read-only", desc: "Group uncommitted working-tree or staged git diffs (optionally scoped by dir) by affected AST symbol." },
+    { name: "git_status", cat: "git", mode: "ro", modeLabel: "read-only", desc: "Report concise workspace git working-tree status scoped under the active root or optional dir." }
   ];
 
   var ledger = document.getElementById("toolsLedger");

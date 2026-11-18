@@ -38,7 +38,8 @@ Full results for Go, CPython, tokio, the Linux kernel and VS Code are in
 ## Installation
 
 There are four ways to get the binary. Whichever you use, the last step is
-`astlens install`, which sets the server up in Claude Code and/or OpenCode.
+`astlens install`, which sets the server up in Claude Code, OpenCode and/or
+Antigravity.
 
 | Way                          | Binary lands in | Upgrade with                          |
 | ---------------------------- | --------------- | ------------------------------------- |
@@ -107,16 +108,16 @@ To install that build instead of running it from `target`, use
 ### Set up the client
 
 Any of the above leaves an `astlens` on `PATH`. Then set up the client. This
-needs `jq`, and `bash` for OpenCode's guard (on Windows,
+needs `jq`, `bash` when enforcing, and `python3` for Antigravity (on Windows,
 `winget install jqlang.jq`):
 
 ```sh
 astlens install
 ```
 
-It detects Claude Code and OpenCode and sets up each one it finds. Pass
-`--client claude`, `--client opencode`, or `--client all` to choose yourself.
-Restart the client afterwards.
+It detects Claude Code, OpenCode and Antigravity, setting up each one it finds.
+Pass `--client claude`, `--client opencode`, `--client antigravity`, or
+`--client all` to choose yourself. Restart the client afterwards.
 
 ### Updating
 
@@ -175,6 +176,14 @@ OpenCode (v2):
   guard script.
 - Adds a short instruction block to `~/.config/opencode/AGENTS.md`.
 
+Antigravity:
+
+- Writes the workspace-aware MCP stdio bridge
+  `~/.gemini/config/astlens/agy-mcp-bridge.py` and registers `mcpServers.astlens`
+  in `~/.gemini/config/mcp_config.json` (backing it up to `.json.bak`).
+- Writes the plugin `~/.gemini/config/plugins/astlens/` (`plugin.json`,
+  `hooks.json`, `agy-guard.py`, `astlens-guard.sh`, and `rules/AGENTS.md`).
+
 The hook and plugin block the model from reading or searching source files in
 the session's workspace the usual way, and point it to the astlens tools
 instead. They deny whole-file `Read`/`read`, the `Grep`/`grep` tool, and
@@ -192,8 +201,8 @@ directory as the workspace root.
 
 | Command                     | Effect                                                       |
 | --------------------------- | ------------------------------------------------------------ |
-| `astlens install`           | Set up Claude Code and/or OpenCode                           |
-| `astlens install --client opencode` | Set up only OpenCode                                 |
+| `astlens install`           | Set up Claude Code, OpenCode and/or Antigravity              |
+| `astlens install --client antigravity` | Set up one client (`claude`, `opencode`, `antigravity`, `all`) |
 | `astlens install --no-enforce` | Register the MCP server only                              |
 | `astlens uninstall`         | Undo `install`, remove the `PATH` entry and the binary       |
 | `astlens update`            | Replace this binary with the latest release                  |
@@ -220,7 +229,7 @@ one command that uses the network.
 | `codebase_map`     | The symbols the rest of the code uses most, by file, within `max_tokens`         | read   |
 | `get_file_outline` | Symbols in a file with signatures and line ranges                                | read   |
 | `search_symbols`   | Ranked name search across the workspace (exact > prefix > substring)             | read   |
-| `read_symbol`      | Exact source of one definition, line-numbered                                    | read   |
+| `read_symbol`      | Exact source of one or more definitions in a file, line-numbered                 | read   |
 | `read_lines`       | A line range of a file, line-numbered, at most 400 lines per call                | read   |
 | `replace_symbol`   | Rewrite or delete one definition without reading the file; rejects syntax errors | write  |
 | `replace_text`     | Exact-text edits, each matching once, applied all or none; rejects syntax errors | write  |
@@ -260,8 +269,8 @@ identifiers and ranks around them; `dir` limits the map to a directory.
 
 Paths are relative to the workspace root. The tools that only read
 (`get_file_outline`, `read_symbol`, `read_lines`, `read_file_pruned`, and
-`search_text`, `list_files`, `find_references` through `dir`) also take the
-absolute or `~/` path of a dependency source. They look under these
+`codebase_map`, `search_symbols`, `search_text`, `list_files`, `find_references`
+through `dir`) also take the absolute or `~/` path of a dependency source. They look under these
 directories, when they exist:
 - `~/.cargo/registry/src`, `~/.cargo/git/checkouts` (`CARGO_HOME`)
 - `~/.rustup/toolchains` (`RUSTUP_HOME`)
