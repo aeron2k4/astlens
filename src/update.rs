@@ -112,7 +112,7 @@ pub fn run(check_only: bool) -> Result<()> {
         }
         match owner {
             install::Owner::Cargo => bail!(
-                "v{} is available; this binary came from cargo, so run: cargo install --force astlens",
+                "v{} is available; this binary came from cargo, so run: cargo install astlens",
                 version_of(&tag)
             ),
             _ => bail!(

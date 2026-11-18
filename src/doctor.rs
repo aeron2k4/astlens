@@ -52,7 +52,7 @@ fn installed_by(owner: Owner) -> &'static str {
 fn update_action(owner: Owner) -> &'static str {
     match owner {
         Owner::Script | Owner::User => "replaces this binary in place",
-        Owner::Cargo => "leaves this binary alone; run: cargo install --force astlens",
+        Owner::Cargo => "leaves this binary alone; run: cargo install astlens",
         Owner::PackageManager => "leaves this binary alone; use the package manager",
     }
 }
