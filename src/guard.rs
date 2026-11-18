@@ -118,10 +118,10 @@ pub fn evaluate(raw: &str, client: Client) -> Option<String> {
 
 fn evaluate_antigravity(payload: &serde_json::Map<String, Value>) -> Option<String> {
     let ws_root = pick_workspace_root(payload);
-    if let Some(root) = &ws_root
+    if let Some((_, canonical_root)) = &ws_root
         && let Some(root_file) = antigravity_root_file()
     {
-        let _ = record_root(&root_file, root);
+        let _ = record_root(&root_file, canonical_root);
     }
 
     if payload.get("hookEventName").and_then(Value::as_str) != Some("PreToolUse") {
@@ -133,7 +133,7 @@ fn evaluate_antigravity(payload: &serde_json::Map<String, Value>) -> Option<Stri
         return allow();
     };
     let tool_name = tool_call.get("name").and_then(Value::as_str).unwrap_or("");
-    let Some(ws_root) = ws_root else {
+    let Some((logical_ws, canonical_ws)) = ws_root else {
         return allow();
     };
     if tool_name == "call_mcp_tool" {
@@ -141,19 +141,37 @@ fn evaluate_antigravity(payload: &serde_json::Map<String, Value>) -> Option<Stri
     }
 
     let args = tool_call.get("args").and_then(Value::as_object);
-    let cwd = normalize(&ws_root.to_string_lossy());
+    let logical_cwd = normalize(&logical_ws.to_string_lossy());
+    let canonical_cwd = normalize(&canonical_ws.to_string_lossy());
     let hints = Hints::antigravity();
 
-    let reason = match tool_name {
+    let reason = check_antigravity_tool(tool_name, args, &logical_cwd, &hints).or_else(|| {
+        (canonical_cwd != logical_cwd)
+            .then(|| check_antigravity_tool(tool_name, args, &canonical_cwd, &hints))
+            .flatten()
+    });
+
+    match reason {
+        Some(reason) => Some(json!({"decision": "deny", "reason": reason}).to_string()),
+        None => allow(),
+    }
+}
+
+fn check_antigravity_tool(
+    tool_name: &str,
+    args: Option<&serde_json::Map<String, Value>>,
+    cwd: &str,
+    hints: &Hints,
+) -> Option<String> {
+    match tool_name {
         "read_file" | "view_file" => {
-            let file = str_field(args, "Path").or_else(|| str_field(args, "AbsolutePath"));
-            let Some(file) = file.filter(|s| !s.is_empty()) else {
-                return allow();
-            };
+            let file = str_field(args, "Path")
+                .or_else(|| str_field(args, "AbsolutePath"))
+                .filter(|s| !s.is_empty())?;
             let limit = antigravity_read_limit(args);
             let req = HookRequest {
                 tool: "Read",
-                cwd: &cwd,
+                cwd,
                 command: None,
                 workdir: None,
                 file: Some(file),
@@ -162,7 +180,7 @@ fn evaluate_antigravity(payload: &serde_json::Map<String, Value>) -> Option<Stri
                 glob: None,
                 kind: None,
             };
-            check_request(&req, &hints)
+            check_request(&req, hints)
         }
         "grep_search" => {
             let search_path = str_field(args, "SearchPath")
@@ -172,7 +190,7 @@ fn evaluate_antigravity(payload: &serde_json::Map<String, Value>) -> Option<Stri
             let glob = antigravity_glob(args);
             let req = HookRequest {
                 tool: "Grep",
-                cwd: &cwd,
+                cwd,
                 command: None,
                 workdir: None,
                 file: None,
@@ -181,16 +199,13 @@ fn evaluate_antigravity(payload: &serde_json::Map<String, Value>) -> Option<Stri
                 glob: Some(glob.as_str()),
                 kind: None,
             };
-            check_request(&req, &hints)
+            check_request(&req, hints)
         }
         "run_command" => {
-            let cmd = str_field(args, "CommandLine").filter(|s| !s.is_empty());
-            let Some(cmd) = cmd else {
-                return allow();
-            };
+            let cmd = str_field(args, "CommandLine").filter(|s| !s.is_empty())?;
             let req = HookRequest {
                 tool: "Bash",
-                cwd: &cwd,
+                cwd,
                 command: Some(cmd),
                 workdir: str_field(args, "Cwd"),
                 file: None,
@@ -199,14 +214,9 @@ fn evaluate_antigravity(payload: &serde_json::Map<String, Value>) -> Option<Stri
                 glob: None,
                 kind: None,
             };
-            check_request(&req, &hints)
+            check_request(&req, hints)
         }
         _ => None,
-    };
-
-    match reason {
-        Some(reason) => Some(json!({"decision": "deny", "reason": reason}).to_string()),
-        None => allow(),
     }
 }
 
@@ -244,7 +254,7 @@ fn antigravity_glob(args: Option<&serde_json::Map<String, Value>>) -> String {
     }
 }
 
-fn to_dir(raw: &str) -> Option<PathBuf> {
+fn to_dir(raw: &str) -> Option<(PathBuf, PathBuf)> {
     let text = raw.trim();
     if text.is_empty() {
         return None;
@@ -259,10 +269,15 @@ fn to_dir(raw: &str) -> Option<PathBuf> {
         PathBuf::from(text)
     };
     let resolved = candidate.canonicalize().ok()?;
-    resolved.is_dir().then_some(resolved)
+    let logical = if candidate.is_absolute() {
+        candidate
+    } else {
+        resolved.clone()
+    };
+    resolved.is_dir().then_some((logical, resolved))
 }
 
-fn pick_workspace_root(payload: &serde_json::Map<String, Value>) -> Option<PathBuf> {
+fn pick_workspace_root(payload: &serde_json::Map<String, Value>) -> Option<(PathBuf, PathBuf)> {
     let mut candidates = Vec::new();
     if let Some(cwd) = payload.get("cwd").and_then(Value::as_str) {
         candidates.push(cwd);
@@ -275,10 +290,10 @@ fn pick_workspace_root(payload: &serde_json::Map<String, Value>) -> Option<PathB
         }
     }
     for raw in candidates {
-        if let Some(dir) = to_dir(raw)
-            && !is_broad_root(&dir)
+        if let Some((logical, resolved)) = to_dir(raw)
+            && !is_broad_root(&resolved)
         {
-            return Some(dir);
+            return Some((logical, resolved));
         }
     }
     None
@@ -511,13 +526,19 @@ fn is_code_type(t: &str) -> bool {
 
 fn normalize(raw: &str) -> String {
     let clean = raw.replace('\\', "/");
+    let clean = clean
+        .strip_prefix("//?/")
+        .filter(|tail| {
+            tail.as_bytes().get(1..3) == Some(b":/") && tail.as_bytes()[0].is_ascii_alphabetic()
+        })
+        .unwrap_or(&clean);
     let mut prefix = String::new();
-    let mut rest = clean.as_str();
+    let mut rest = clean;
     if let Some((drive, tail)) = clean.split_once(":/")
         && drive.len() == 1
         && drive.as_bytes()[0].is_ascii_alphabetic()
     {
-        prefix = format!("{drive}:/");
+        prefix = format!("{}:/", drive.to_ascii_uppercase());
         rest = tail;
     } else if clean.starts_with('/') {
         prefix = "/".to_string();
@@ -571,6 +592,9 @@ fn absolute(path: &str, base_dir: &str) -> String {
 fn inside_workspace(abs: &str, cwd: &str) -> bool {
     if cwd == "/" {
         return abs.starts_with('/');
+    }
+    if cwd.len() == 3 && cwd.ends_with(":/") {
+        return abs.starts_with(cwd);
     }
     let abs_slash = format!("{abs}/");
     let cwd_prefix = format!("{cwd}/");
@@ -1543,18 +1567,21 @@ mod tests {
         let cache = dir.path().join("cache");
         let root_file = cache.join("antigravity_root");
         let canonical_ws = ws.canonicalize().unwrap();
-        let uri = format!(
-            "file://{}",
-            canonical_ws.to_string_lossy().replace(' ', "%20")
-        );
+        let canonical_file = canonical_ws.join("src/main.rs");
+        let norm_ws = normalize(&ws.to_string_lossy()).replace(' ', "%20");
+        let uri = if norm_ws.starts_with('/') {
+            format!("file://{norm_ws}")
+        } else {
+            format!("file:///{norm_ws}")
+        };
 
-        // SessionStart only records the root and replies `{}`.
+        // SessionStart only records the canonical root and replies `{}`.
         let payload = json!({
             "hookEventName": "SessionStart",
             "cwd": "/",
-            "workspacePaths": [uri],
+            "workspacePaths": [&uri],
         });
-        let picked = pick_workspace_root(payload.as_object().unwrap()).unwrap();
+        let (_, picked) = pick_workspace_root(payload.as_object().unwrap()).unwrap();
         assert_eq!(picked, canonical_ws);
         record_root(&root_file, &picked).unwrap();
         assert_eq!(
@@ -1562,21 +1589,45 @@ mod tests {
             format!("{}\n", canonical_ws.display())
         );
 
-        let deny = evaluate(
+        for (case_cwd, case_file) in [(&ws, &file), (&canonical_ws, &canonical_file)] {
+            let deny = evaluate(
+                &json!({
+                    "hookEventName": "PreToolUse",
+                    "cwd": case_cwd,
+                    "toolCall": {"name": "read_file", "args": {"Path": case_file}}
+                })
+                .to_string(),
+                Client::Antigravity,
+            )
+            .unwrap();
+            let deny_v: Value = serde_json::from_str(&deny).unwrap();
+            assert_eq!(
+                deny_v["decision"],
+                "deny",
+                "case_cwd={}",
+                case_cwd.display()
+            );
+            assert!(
+                deny_v["reason"].as_str().unwrap().contains("call_mcp_tool"),
+                "{deny}"
+            );
+        }
+
+        // Logical workspacePaths URI also blocks reads targeting the canonical path.
+        let uri_deny = evaluate(
             &json!({
                 "hookEventName": "PreToolUse",
-                "cwd": canonical_ws,
-                "toolCall": {"name": "read_file", "args": {"Path": file}}
+                "cwd": "/",
+                "workspacePaths": [&uri],
+                "toolCall": {"name": "read_file", "args": {"Path": &canonical_file}}
             })
             .to_string(),
             Client::Antigravity,
         )
         .unwrap();
-        let deny_v: Value = serde_json::from_str(&deny).unwrap();
-        assert_eq!(deny_v["decision"], "deny");
-        assert!(
-            deny_v["reason"].as_str().unwrap().contains("call_mcp_tool"),
-            "{deny}"
+        assert_eq!(
+            serde_json::from_str::<Value>(&uri_deny).unwrap()["decision"],
+            "deny"
         );
 
         let allow = evaluate(
@@ -1585,7 +1636,7 @@ mod tests {
                 "cwd": canonical_ws,
                 "toolCall": {
                     "name": "read_file",
-                    "args": {"Path": file, "StartLine": 10, "EndLine": 40}
+                    "args": {"Path": canonical_file, "StartLine": 10, "EndLine": 40}
                 }
             })
             .to_string(),
@@ -1596,6 +1647,20 @@ mod tests {
             serde_json::from_str::<Value>(&allow).unwrap()["decision"],
             "allow"
         );
+    }
+
+    #[test]
+    fn normalize_strips_windows_verbatim_and_unifies_drive_case() {
+        assert_eq!(
+            normalize(r"\\?\C:\Users\dev\repo\src\..\main.rs"),
+            "C:/Users/dev/repo/main.rs"
+        );
+        assert_eq!(normalize("c:/Users/dev/repo"), "C:/Users/dev/repo");
+        assert!(inside_workspace(
+            "C:/Users/dev/repo/src/main.rs",
+            &normalize(r"\\?\c:\Users\dev\repo")
+        ));
+        assert!(inside_workspace("C:/src/main.rs", &normalize("c:\\")));
     }
 
     #[test]
