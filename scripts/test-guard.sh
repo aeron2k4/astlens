@@ -121,6 +121,8 @@ cat src/main.rs | less
 /bin/cat src/main.rs
 cat "src/tiếng việt.rs"
 sed 999q src/main.rs
+| cat src/main.rs
+| cat src/main.rs |
 CASES
 
 while IFS= read -r c; do [ -n "$c" ] && bash_cmd allow "$c"; done <<'CASES'
