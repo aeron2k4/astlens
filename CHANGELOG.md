@@ -3,6 +3,31 @@
 All notable changes to astlens. Versions follow [Semantic Versioning](https://semver.org/).
 Each entry ends with the commits that made it.
 
+## Unreleased
+
+### Added
+
+- `astlens install`, `astlens uninstall`, and `astlens doctor` now support
+  Google Antigravity (`--client antigravity`, plus auto-detection under
+  `--client all`), configuring `~/.gemini/config/mcp_config.json` and the
+  `~/.gemini/config/plugins/astlens` guard and rules bundle with zero Python,
+  `bash`, or `jq` runtime dependencies (`84b8238`, `9e448c0`, `613f6c2`).
+- Native `astlens guard [--client claude|opencode|antigravity]` subcommand
+  porting `PreToolUse` source-read and shell-pipeline enforcement into compiled
+  Rust, plus dynamic workspace-root tracking (`ASTLENS_CLIENT=antigravity` and
+  `ASTLENS_ROOT_FILE`) for MCP clients without `roots/list` (`9e448c0`,
+  `c221548`).
+- `read_symbol` accepts `names` (`string[]`, up to 20 symbols) to fetch multiple
+  definitions from one file in a single MCP call (`361e366`).
+- `search_symbols`, `changed_symbols`, and `git_status` accept an optional `dir`
+  parameter to scope operations to a subdirectory (`5146135`).
+
+### Changed
+
+- Redesigned the GitHub Pages documentation site with an interactive tool
+  inspector, `JetBrains Mono` typography, and Antigravity installation guides
+  (`e77d1c6`, `755c145`, `44bf826`, `2860b9b`).
+
 ## 0.7.1 (2026-11-18)
 
 ### Added
