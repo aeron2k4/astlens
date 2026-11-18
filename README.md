@@ -66,7 +66,7 @@ Windows, run it in Git Bash. It needs no `sudo`.
 A specific release, or a build from source instead of a download:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/aeron2k4/astlens/main/scripts/install.sh | bash -s -- --version v0.7.1
+curl -fsSL https://raw.githubusercontent.com/aeron2k4/astlens/main/scripts/install.sh | bash -s -- --version v0.8.0
 curl -fsSL https://raw.githubusercontent.com/aeron2k4/astlens/main/scripts/install.sh | bash -s -- --from-source
 ```
 
@@ -86,7 +86,7 @@ you.
 ### With cargo, from git
 
 ```sh
-cargo install --git https://github.com/aeron2k4/astlens --tag v0.7.1 --locked
+cargo install --git https://github.com/aeron2k4/astlens --tag v0.8.0 --locked
 ```
 
 Same destination, `~/.cargo/bin`. Without `--tag`, cargo builds the tip of

@@ -1347,7 +1347,7 @@
       </span>
       astlens
     </a>
-    <span class="verbadge" translate="no">v0.7.1</span>
+    <span class="verbadge" translate="no">v0.8.0</span>
     <nav class="topnav" aria-label="Primary">
       <a href="#inspector">Inspector</a>
       <a href="#benchmarks">Benchmarks</a>
@@ -1575,14 +1575,14 @@
         <span class="step-idx" aria-hidden="true">1</span>
         <div>
           <h3>Install the Binary</h3>
-          <p>Download <code translate="no">v0.7.1</code> with the install script into <code translate="no">~/.local/bin/astlens</code>, or install from <code translate="no">crates.io</code> via Cargo.</p>
+          <p>Download <code translate="no">v0.8.0</code> with the install script into <code translate="no">~/.local/bin/astlens</code>, or install from <code translate="no">crates.io</code> via Cargo.</p>
         </div>
       </li>
       <li>
         <span class="step-idx" aria-hidden="true">2</span>
         <div>
           <h3>Connect Your Agent Client</h3>
-          <p>Run <code translate="no">astlens install</code> to configure Claude Code and OpenCode automatically, or register <code translate="no">astlens --serve</code> in Antigravity.</p>
+          <p>Run <code translate="no">astlens install</code> to configure Claude Code, OpenCode, and Antigravity automatically.</p>
         </div>
       </li>
     </ol>
@@ -1598,10 +1598,10 @@
       <div class="install-pane active" id="pane-script" role="tabpanel" aria-labelledby="install-tab-script">
         <p class="why">Downloads the release binary for Linux x86_64, macOS, or Windows (Git Bash), verifies <code translate="no">SHA256SUMS</code>, and builds from source on unsupported targets.</p>
         <div class="codeblock">
-          <pre id="code-script" translate="no"><span class="cm"># install latest release (or pin --version v0.7.1)</span>
-curl -fsSL https://raw.githubusercontent.com/aeron2k4/astlens/main/scripts/install.sh | bash -s -- --version v0.7.1
+          <pre id="code-script" translate="no"><span class="cm"># install latest release (or pin --version v0.8.0)</span>
+curl -fsSL https://raw.githubusercontent.com/aeron2k4/astlens/main/scripts/install.sh | bash -s -- --version v0.8.0
 
-<span class="cm"># register MCP server + guard hook for Claude Code / OpenCode</span>
+<span class="cm"># register MCP server + guard hook for Claude Code / OpenCode / Antigravity</span>
 astlens install</pre>
           <button class="copy-btn" type="button" data-copy="code-script" aria-label="Copy install script commands">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
@@ -1611,7 +1611,7 @@ astlens install</pre>
       </div>
 
       <div class="install-pane" id="pane-cargo" role="tabpanel" aria-labelledby="install-tab-cargo">
-        <p class="why">Installs <code translate="no">astlens 0.7.1</code> directly from <code translate="no">crates.io</code> into <code translate="no">~/.cargo/bin</code> (requires Rust 1.90 or later).</p>
+        <p class="why">Installs <code translate="no">astlens 0.8.0</code> directly from <code translate="no">crates.io</code> into <code translate="no">~/.cargo/bin</code> (requires Rust 1.90 or later).</p>
         <div class="codeblock">
           <pre id="code-cargo" translate="no">cargo install astlens
 
@@ -1625,11 +1625,11 @@ astlens install</pre>
       </div>
 
       <div class="install-pane" id="pane-release" role="tabpanel" aria-labelledby="install-tab-release">
-        <p class="why">Direct asset downloads with <code translate="no">SHA256SUMS</code> and SLSA build provenance on <a href="https://github.com/aeron2k4/astlens/releases/tag/v0.7.1" target="_blank" rel="noopener">GitHub Releases</a>.</p>
+        <p class="why">Direct asset downloads with <code translate="no">SHA256SUMS</code> and SLSA build provenance on <a href="https://github.com/aeron2k4/astlens/releases/tag/v0.8.0" target="_blank" rel="noopener">GitHub Releases</a>.</p>
         <div class="codeblock">
           <pre id="code-release" translate="no"><span class="cm"># download Linux x86_64 binary and verify SLSA provenance</span>
 mkdir -p ~/.local/bin
-curl -fsSL https://github.com/aeron2k4/astlens/releases/download/v0.7.1/astlens-linux -o ~/.local/bin/astlens
+curl -fsSL https://github.com/aeron2k4/astlens/releases/download/v0.8.0/astlens-linux -o ~/.local/bin/astlens
 chmod +x ~/.local/bin/astlens
 gh attestation verify ~/.local/bin/astlens --repo aeron2k4/astlens
 ~/.local/bin/astlens install</pre>
@@ -1664,7 +1664,7 @@ install -m 755 target/release/astlens ~/.local/bin/astlens
       <div class="cmd-row"><div>astlens doctor</div><div>Inspect binary path, installer owner, duplicate copies, and target asset</div></div>
       <div class="cmd-row"><div>astlens uninstall</div><div>Remove client registrations, shell PATH entry, and the installed binary</div></div>
       <div class="cmd-row"><div>astlens --serve [ROOT]</div><div>Run the MCP server over stdio (syncs MCP <code translate="no">roots/list</code> when root is omitted)</div></div>
-      <div class="cmd-row"><div>astlens --version</div><div>Print installed version (<code translate="no">0.7.1</code>)</div></div>
+      <div class="cmd-row"><div>astlens --version</div><div>Print installed version (<code translate="no">0.8.0</code>)</div></div>
     </div>
   </section>
 
