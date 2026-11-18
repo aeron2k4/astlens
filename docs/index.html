@@ -464,9 +464,10 @@ astlens install</pre>
         <p class="why">Every release ships three binaries plus checksums: <span class="mono">astlens-linux</span>, <span class="mono">astlens-macos</span> and <span class="mono">astlens-windows.exe</span>, with a <span class="mono">SHA256SUMS</span> file. Latest: <a href="https://github.com/aeron2k4/astlens/releases" target="_blank" rel="noopener">v0.7.0 on GitHub Releases ↗</a></p>
         <div class="codeblock">
           <pre id="code-release"><span class="cm"># example: Linux binary from the latest release</span>
-curl -LO https://github.com/aeron2k4/astlens/releases/latest/download/astlens-linux
-chmod +x astlens-linux
-./astlens-linux install</pre>
+mkdir -p ~/.local/bin
+curl -fsSL https://github.com/aeron2k4/astlens/releases/latest/download/astlens-linux -o ~/.local/bin/astlens
+chmod +x ~/.local/bin/astlens
+~/.local/bin/astlens install</pre>
           <button class="copy-btn" type="button" data-copy="code-release"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>Copy</button>
         </div>
       </div>
@@ -515,7 +516,7 @@ cargo build --release
       <div class="cmd-row"><div>astlens update</div><div>Download the latest release over this binary, after checking it against <span class="mono">SHA256SUMS</span></div></div>
       <div class="cmd-row"><div>astlens update --check</div><div>Report whether a newer release exists, and change nothing</div></div>
       <div class="cmd-row"><div>astlens doctor</div><div>Report the binary, where it came from and whether <span class="mono">update</span> can replace it</div></div>
-      <div class="cmd-row"><div>astlens serve [ROOT]</div><div>Run the server over stdio</div></div>
+      <div class="cmd-row"><div>astlens --serve [ROOT]</div><div>Run the server over stdio</div></div>
       <div class="cmd-row"><div>astlens --version</div><div>Show the version</div></div>
     </div>
   </section>
@@ -569,12 +570,13 @@ cargo build --release
       body:
 '<span class="c"># agent asks for a map before touching anything</span>\n' +
 '<span class="a">→ codebase_map</span> <span class="c">{ max_tokens: 2000 }</span>\n\n' +
+'<span class="c">.: 120 symbols in 58 of 8236 files, the ones other files use most</span>\n' +
 '<span class="g">src/mcp/tools.rs</span>\n' +
-'  pub fn register_tools  <span class="c">· used by 14 files</span>\n' +
-'  pub struct ToolRouter  <span class="c">· used by 9 files</span>\n' +
-'<span class="g">src/index/store.rs</span>\n' +
-'  pub fn search_symbols  <span class="c">· used by 7 files</span>\n\n' +
-'<span class="c">120 symbols · 58 files · ranked by PageRank</span>',
+'  pub struct Workspace <span class="b">[struct] L52-63</span>\n' +
+'    pub fn new(...) -&gt; Result&lt;Self&gt; <span class="b">[method] L112-135</span>\n' +
+'<span class="g">src/index/cache.rs</span>\n' +
+'  pub struct ParseCache <span class="b">[struct] L453-459</span>\n' +
+'<span class="c">… 8178 files not shown, most used first: src (8178); narrow with dir or focus</span>',
       foot: '240 ms on the Go standard library · 2,051× fewer tokens than all outlines'
     },
     search: {
@@ -590,7 +592,7 @@ cargo build --release
     read: {
       body:
 '<span class="c"># exactly one definition, line-numbered</span>\n' +
-'<span class="a">→ read_symbol</span> <span class="c">{ name: "parse_config", file: "src/config.rs" }</span>\n\n' +
+'<span class="a">→ read_symbol</span> <span class="c">{ path: "src/config.rs", name: "parse_config" }</span>\n\n' +
 '<span class="b">41</span>  pub fn parse_config(text: &amp;str) -&gt; Result&lt;Config&gt; {\n' +
 '<span class="b">42</span>      let doc = Parser::new(text).parse()?;\n' +
 '<span class="b">43</span>      Ok(Config::from_doc(doc))\n' +
