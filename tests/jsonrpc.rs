@@ -328,6 +328,19 @@ async fn mcp_session_over_jsonrpc() {
         tool_text(&stop),
         "// app.py:5-6 [method] App::stop\n5\t    def stop(self):\n6\t        return 0\n"
     );
+    let batch = client
+        .call(
+            50,
+            "tools/call",
+            json!({"name": "read_symbol", "arguments": {"path": "app.py", "names": ["App::run", "App::stop"]}}),
+        )
+        .await;
+    assert_ne!(batch["result"]["isError"], true, "{batch}");
+    assert_eq!(
+        tool_text(&batch),
+        "// app.py:2-3 [method] App::run\n2\t    def run(self):\n3\t        return 2\n\
+         // app.py:5-6 [method] App::stop\n5\t    def stop(self):\n6\t        return 0\n"
+    );
 
     // The other tools answer over the protocol too.
     let calls = [
@@ -405,6 +418,16 @@ async fn mcp_session_over_jsonrpc() {
         (
             json!({"name": "git_status", "arguments": {}}),
             "git status failed",
+        ),
+        (
+            json!({"name": "read_symbol", "arguments": {"path": "app.py"}}),
+            "pass `name` or `names`",
+        ),
+        (
+            json!({"name": "read_symbol", "arguments": {
+                "path": "app.py", "name": "App::run", "names": ["App::stop"]
+            }}),
+            "not both",
         ),
     ];
     for (id, (params, expected)) in (13..).zip(cases) {

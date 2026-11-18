@@ -37,6 +37,8 @@ const DEFAULT_HIT_LIMIT: usize = 100;
 /// Compiled-regex size cap, so a pathological pattern fails fast.
 const MAX_REGEX_BYTES: usize = 1 << 20;
 const MAX_SYMBOL_MATCHES: usize = 5;
+/// Most distinct symbols one batch `read_symbol` call returns.
+const MAX_READ_SYMBOLS: usize = 20;
 /// Most lines one `read_lines` call returns.
 const MAX_READ_LINES: usize = 400;
 /// Most context lines `search_text` shows on each side of a match.
@@ -366,45 +368,56 @@ impl Workspace {
         out
     }
 
+    fn matching_symbols<'a>(parsed: &'a ParsedFile, name: &str) -> Vec<&'a Symbol> {
+        parsed
+            .symbols
+            .iter()
+            .filter(|s| s.name == name || s.qualified_name() == name)
+            .collect()
+    }
+
+    fn known_symbols(parsed: &ParsedFile) -> String {
+        let mut known: Vec<_> = parsed.symbols.iter().map(|s| s.qualified_name()).collect();
+        known.truncate(30);
+        known.join(", ")
+    }
+
+    fn append_symbol_source(
+        out: &mut String,
+        display_path: &str,
+        source: &str,
+        sym: &Symbol,
+        start: usize,
+    ) {
+        let first_line = line_number(source, start);
+        let _ = writeln!(
+            out,
+            "// {display_path}:{first_line}-{} [{}] {}",
+            sym.end_line,
+            sym.kind.as_str(),
+            sym.qualified_name()
+        );
+        for (i, line) in source[start..sym.end_byte].lines().enumerate() {
+            let _ = writeln!(out, "{}\t{line}", first_line + i);
+        }
+    }
+
     pub fn read_symbol(&self, rel: &str, name: &str) -> Result<String> {
         let (root, path) = self.resolve_read(rel)?;
         let file = self.cache.get(&path)?;
         let name = name.trim();
-        let matches: Vec<_> = file
-            .parsed
-            .symbols
-            .iter()
-            .filter(|s| s.name == name || s.qualified_name() == name)
-            .collect();
+        let matches = Self::matching_symbols(&file.parsed, name);
         if matches.is_empty() {
-            let mut known: Vec<_> = file
-                .parsed
-                .symbols
-                .iter()
-                .map(|s| s.qualified_name())
-                .collect();
-            known.truncate(30);
             return Err(anyhow!(
                 "symbol {name:?} not found in {rel}; available: {}",
-                known.join(", ")
+                Self::known_symbols(&file.parsed)
             ));
         }
+        let display_path = self.display_in(&root, &path);
         let mut out = String::new();
         for sym in matches.iter().take(MAX_SYMBOL_MATCHES) {
             let start = symbol_start(&file.parsed, &file.source, sym);
-            let first_line = line_number(&file.source, start);
-            let _ = writeln!(
-                out,
-                "// {}:{}-{} [{}] {}",
-                self.display_in(&root, &path),
-                first_line,
-                sym.end_line,
-                sym.kind.as_str(),
-                sym.qualified_name()
-            );
-            for (i, line) in file.source[start..sym.end_byte].lines().enumerate() {
-                let _ = writeln!(out, "{}\t{line}", first_line + i);
-            }
+            Self::append_symbol_source(&mut out, &display_path, &file.source, sym, start);
         }
         if matches.len() > MAX_SYMBOL_MATCHES {
             let _ = writeln!(
@@ -412,6 +425,75 @@ impl Workspace {
                 "… {} more matches; use a qualified name to narrow down",
                 matches.len() - MAX_SYMBOL_MATCHES
             );
+        }
+        Ok(out)
+    }
+
+    /// Return the exact source of several symbols from `rel` in one lookup.
+    pub fn read_symbols<S: AsRef<str>>(&self, rel: &str, names: &[S]) -> Result<String> {
+        let mut wanted: Vec<&str> = Vec::new();
+        for item in names {
+            let name = item.as_ref().trim();
+            if !name.is_empty() && !wanted.contains(&name) {
+                wanted.push(name);
+            }
+        }
+        if wanted.is_empty() {
+            bail!("pass `name` or `names`");
+        }
+        if wanted.len() > MAX_READ_SYMBOLS {
+            bail!(
+                "too many symbols requested ({}); pass at most {MAX_READ_SYMBOLS}",
+                wanted.len()
+            );
+        }
+        if wanted.len() == 1 {
+            return self.read_symbol(rel, wanted[0]);
+        }
+
+        let (root, path) = self.resolve_read(rel)?;
+        let file = self.cache.get(&path)?;
+        let display_path = self.display_in(&root, &path);
+        let mut out = String::new();
+        let mut seen_spans: Vec<(usize, usize)> = Vec::new();
+        let mut missing: Vec<&str> = Vec::new();
+        let mut any_found = false;
+
+        for q in wanted {
+            let matches = Self::matching_symbols(&file.parsed, q);
+            if matches.is_empty() {
+                missing.push(q);
+                continue;
+            }
+            any_found = true;
+            for sym in matches.iter().take(MAX_SYMBOL_MATCHES) {
+                let start = symbol_start(&file.parsed, &file.source, sym);
+                let span = (start, sym.end_byte);
+                if !seen_spans.contains(&span) {
+                    seen_spans.push(span);
+                    Self::append_symbol_source(&mut out, &display_path, &file.source, sym, start);
+                }
+            }
+            if matches.len() > MAX_SYMBOL_MATCHES {
+                let _ = writeln!(
+                    out,
+                    "… {} more matches for {q:?}; use a qualified name to narrow down",
+                    matches.len() - MAX_SYMBOL_MATCHES
+                );
+            }
+        }
+
+        if !missing.is_empty() {
+            let available = Self::known_symbols(&file.parsed);
+            if !any_found {
+                bail!("symbols {missing:?} not found in {rel}; available: {available}");
+            }
+            for m in missing {
+                let _ = writeln!(
+                    out,
+                    "// symbol {m:?} not found in {rel}; available: {available}"
+                );
+            }
         }
         Ok(out)
     }
@@ -1636,8 +1718,13 @@ pub struct ReadSymbolParams {
     /// File path relative to the workspace root, or the absolute path of a
     /// dependency source (e.g. under ~/.cargo/registry/src).
     pub path: String,
-    /// Symbol name, plain (`new`) or qualified (`Parser::new`).
-    pub name: String,
+    /// Symbol name, plain (`new`) or qualified (`Parser::new`). Pass `names`
+    /// instead to read several symbols from `path` in one call.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Symbol names to read from `path` in one call (at most 20).
+    #[serde(default)]
+    pub names: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -1958,7 +2045,7 @@ impl AstLens {
     }
 
     #[tool(
-        description = "Return the exact source of one symbol (function, class, ...) in a file, with line numbers.",
+        description = "Return the exact source of one or more symbols (functions, classes, ...) in a file, with line numbers. Pass `name` for one symbol or `names` for up to 20 in one call.",
         annotations(
             read_only_hint = true,
             destructive_hint = false,
@@ -1970,7 +2057,20 @@ impl AstLens {
         &self,
         Parameters(p): Parameters<ReadSymbolParams>,
     ) -> Result<String, String> {
-        self.run(move |ws| ws.read_symbol(&p.path, &p.name)).await
+        self.run(move |ws| {
+            let single = p.name.as_deref().map(str::trim).filter(|s| !s.is_empty());
+            let has_multi = p
+                .names
+                .as_ref()
+                .is_some_and(|v| v.iter().any(|s| !s.trim().is_empty()));
+            match (single, has_multi) {
+                (Some(_), true) => bail!("pass `name` or `names`, not both"),
+                (Some(name), false) => ws.read_symbol(&p.path, name),
+                (None, true) => ws.read_symbols(&p.path, p.names.as_deref().unwrap_or(&[])),
+                (None, false) => bail!("pass `name` or `names`"),
+            }
+        })
+        .await
     }
 
     #[tool(
@@ -2224,7 +2324,7 @@ impl ServerHandler for AstLens {
             .with_instructions(
                 "AST-aware code navigation. Start in an unfamiliar codebase with codebase_map, \
                  which shows the symbols the rest of the code uses most. Prefer get_file_outline \
-                 and search_symbols to locate code, read_symbol to read exactly one definition, read_lines for a range of \
+                 and search_symbols to locate code, read_symbol to read one or several definitions, read_lines for a range of \
                  lines such as a compiler error's, and read_file_pruned to read a whole file \
                  within a token budget. Use find_references to see where a symbol is used and \
                  search_text instead of grep. To rewrite a whole function or class, use \
@@ -2271,6 +2371,44 @@ mod tests {
         assert!(out.contains("6\t    }"));
         let err = ws.read_symbol("src/lib.rs", "nope").unwrap_err();
         assert!(err.to_string().contains("available: Cfg"));
+    }
+
+    #[test]
+    fn read_symbols_reads_multiple_definitions_and_deduplicates_spans() {
+        let (dir, ws) = workspace();
+        fs::write(
+            dir.path().join("src/lib.rs"),
+            "pub struct Cfg;\n\nimpl Cfg {\n    pub fn load() -> Self {\n        Cfg\n    }\n    pub fn save(&self) {}\n}\n\npub fn helper() {}\n",
+        )
+        .unwrap();
+
+        let out = ws
+            .read_symbols("src/lib.rs", &["Cfg::load", "load", "helper"])
+            .unwrap();
+        assert_eq!(
+            out.matches("// src/lib.rs:4-6 [method] Cfg::load").count(),
+            1
+        );
+        assert!(out.contains("10\tpub fn helper() {}"));
+
+        let partial = ws
+            .read_symbols("src/lib.rs", &["Cfg::save", "missing_sym"])
+            .unwrap();
+        assert!(partial.contains("7\t    pub fn save(&self) {}"));
+        assert!(partial.contains("// symbol \"missing_sym\" not found in src/lib.rs"));
+
+        let all_missing = ws
+            .read_symbols("src/lib.rs", &["nope1", "nope2"])
+            .unwrap_err()
+            .to_string();
+        assert!(all_missing.contains("symbols [\"nope1\", \"nope2\"] not found"));
+
+        let empty_err = ws.read_symbols("src/lib.rs", &["", "  "]).unwrap_err();
+        assert!(empty_err.to_string().contains("pass `name` or `names`"));
+
+        let too_many: Vec<String> = (0..=MAX_READ_SYMBOLS).map(|i| format!("s{i}")).collect();
+        let cap_err = ws.read_symbols("src/lib.rs", &too_many).unwrap_err();
+        assert!(cap_err.to_string().contains("too many symbols requested"));
     }
 
     #[test]
