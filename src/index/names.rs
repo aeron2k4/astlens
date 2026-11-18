@@ -65,7 +65,18 @@ impl SymbolNames {
         names.incomplete = parsed.incomplete;
         names.mentions = Mentions::of(parsed, source);
         if parsed.lang == Lang::Go {
-            names.package = go_package(source).map(mentions::hash);
+            names.package = parsed
+                .idents
+                .iter()
+                .find_map(|&start| {
+                    let start = start as usize;
+                    let before = source.as_bytes().get(..start)?;
+                    mentions::is_package_clause(before)
+                        .then(|| mentions::token_at(source, start))
+                        .flatten()
+                })
+                .or_else(|| go_package(source))
+                .map(mentions::hash);
         }
         names
     }
@@ -856,6 +867,15 @@ mod tests {
         );
         let parents: Vec<_> = (0..names.len()).map(|s| names.parent(s)).collect();
         assert_eq!(parents, [Some("logWriter"), Some("Pair"), Some("T"), None]);
+    }
+
+    #[test]
+    fn go_package_ignores_package_words_inside_comments() {
+        let names = names_of(
+            "a.go",
+            "/*\npackage wrong\n*/\n// package also_wrong\npackage real\n\nfunc F() {}\n",
+        );
+        assert_eq!(names.package, Some(mentions::hash("real")));
     }
 
     #[test]

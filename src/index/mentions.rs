@@ -306,7 +306,7 @@ pub fn is_token(name: &str) -> bool {
 
 /// The identifier token starting at byte `start` of `source`: the longest run
 /// of identifier characters there, or `None` when there is none.
-fn token_at(source: &str, start: usize) -> Option<&str> {
+pub(crate) fn token_at(source: &str, start: usize) -> Option<&str> {
     let rest = source.get(start..)?;
     let end = rest
         .char_indices()
