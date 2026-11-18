@@ -62,9 +62,17 @@ struct RootState {
     explicit: bool,
 }
 
+struct WatchedRootFile {
+    path: PathBuf,
+    initial_root: PathBuf,
+    last_raw: std::sync::Mutex<String>,
+}
+
 pub struct Workspace {
     root: std::sync::RwLock<RootState>,
     allows_client_roots: bool,
+    root_file: Option<WatchedRootFile>,
+    client_roots_applied: std::sync::atomic::AtomicBool,
     cache: ParseCache,
     max_files: usize,
     /// Canonical directories of dependency sources outside the current root,
@@ -87,6 +95,8 @@ impl Workspace {
                 explicit: true,
             }),
             allows_client_roots: false,
+            root_file: None,
+            client_roots_applied: std::sync::atomic::AtomicBool::new(false),
             cache: ParseCache::default(),
             max_files: index::DEFAULT_MAX_FILES,
             libraries: Vec::new(),
@@ -103,6 +113,19 @@ impl Workspace {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .explicit = false;
         self.allows_client_roots = true;
+        self
+    }
+
+    /// Follow a dynamic root file (such as Antigravity's `antigravity_root`)
+    /// when the MCP client does not supply workspace roots via `roots/list`.
+    pub fn with_root_file(mut self, path: impl Into<PathBuf>) -> Self {
+        let initial_root = self.root();
+        self.root_file = Some(WatchedRootFile {
+            path: path.into(),
+            initial_root,
+            last_raw: std::sync::Mutex::new(String::new()),
+        });
+        self.sync_root_file();
         self
     }
 
@@ -153,7 +176,56 @@ impl Workspace {
         self
     }
 
+    fn sync_root_file(&self) {
+        if self
+            .client_roots_applied
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return;
+        }
+        let Some(wf) = &self.root_file else {
+            return;
+        };
+        let raw = match std::fs::read_to_string(&wf.path) {
+            Ok(text) => text.trim().to_string(),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(_) => return,
+        };
+        let mut last = wf
+            .last_raw
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if raw == *last {
+            return;
+        }
+        if raw.is_empty() {
+            *last = raw;
+            let mut state = self
+                .root
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.path = wf.initial_root.clone();
+            state.explicit = false;
+            return;
+        }
+        let Ok(canonical) = PathBuf::from(&raw).canonicalize() else {
+            return;
+        };
+        if !canonical.is_dir() || is_broad_root(&canonical) {
+            return;
+        }
+        *last = raw;
+        let mut state = self
+            .root
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.path = canonical.clone();
+        state.explicit = true;
+        tracing::debug!(root = %canonical.display(), "workspace root synced from root file");
+    }
+
     fn root_state(&self) -> RootState {
+        self.sync_root_file();
         self.root
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -183,6 +255,8 @@ impl Workspace {
         if !canonical.is_dir() {
             bail!("workspace root is not a directory: {}", canonical.display());
         }
+        self.client_roots_applied
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         let mut state = self
             .root
             .write()
@@ -1303,7 +1377,7 @@ fn canonical_in(root: &Path, rel: &str) -> Result<PathBuf> {
         .with_context(|| format!("no such path: {rel}"))
 }
 
-fn is_broad_root(path: &Path) -> bool {
+pub(crate) fn is_broad_root(path: &Path) -> bool {
     let home = std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)
@@ -1315,7 +1389,7 @@ fn is_broad_root_with_home(path: &Path, home: Option<&Path>) -> bool {
     path.parent().is_none() || home.is_some_and(|h| h == path)
 }
 
-fn file_uri_to_path(uri: &str) -> Option<PathBuf> {
+pub(crate) fn file_uri_to_path(uri: &str) -> Option<PathBuf> {
     file_uri_to_path_for(uri, cfg!(windows))
 }
 
@@ -3905,5 +3979,45 @@ mod tests {
 
         let not_dir = ws.git_status_in(Some("sub/mod.rs")).unwrap_err();
         assert!(not_dir.to_string().contains("not a directory"), "{not_dir}");
+    }
+
+    #[test]
+    fn root_file_switches_active_workspace_and_reverts_when_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let proj_a = dir.path().join("proj-a");
+        let proj_b = dir.path().join("proj-b");
+        fs::create_dir_all(&proj_a).unwrap();
+        fs::create_dir_all(&proj_b).unwrap();
+        fs::write(proj_a.join("a.rs"), "pub fn a() {}\n").unwrap();
+        fs::write(proj_b.join("b.rs"), "pub fn b() {}\n").unwrap();
+
+        let root_file = dir.path().join("antigravity_root");
+        let fs_root = proj_a
+            .canonicalize()
+            .unwrap()
+            .ancestors()
+            .last()
+            .unwrap()
+            .to_path_buf();
+
+        let ws = Workspace::new(&fs_root)
+            .unwrap()
+            .with_implicit_root()
+            .with_root_file(&root_file);
+        assert!(ws.has_broad_implicit_root());
+        assert!(ws.list_files(None, 10).is_err());
+
+        fs::write(&root_file, format!("{}\n", proj_a.display())).unwrap();
+        assert!(!ws.has_broad_implicit_root());
+        assert_eq!(ws.list_files(None, 10).unwrap(), "a.rs\n");
+        ws.replace_text("a.rs", &[text_edit("fn a()", "fn a2()")])
+            .unwrap();
+
+        fs::write(&root_file, format!("{}\n", proj_b.display())).unwrap();
+        assert_eq!(ws.list_files(None, 10).unwrap(), "b.rs\n");
+
+        fs::remove_file(&root_file).unwrap();
+        assert!(ws.has_broad_implicit_root());
+        assert!(ws.list_files(None, 10).is_err());
     }
 }

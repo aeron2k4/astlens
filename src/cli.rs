@@ -22,6 +22,7 @@ Commands:
                                 cargo command is printed instead; --check only reports
   doctor                        Report this binary, where it came from and whether
                                 update can replace it; changes nothing
+  guard [--client CLIENT]       Run the PreToolUse hook over stdin (used by clients)
 
 Options:
   -s, --serve [ROOT]            Run the MCP server over stdio; the client starts this itself.
@@ -61,12 +62,13 @@ pub enum Command {
     Uninstall,
     Update { check_only: bool },
     Doctor,
+    Guard { client: Client },
 }
 
 /// Commands a bare word names. They are read before the fallback that takes a
 /// word for the workspace root, so a directory with one of these names is
 /// served with `--serve <name>` or `$ASTLENS_ROOT` instead.
-const COMMANDS: [&str; 4] = ["install", "uninstall", "update", "doctor"];
+const COMMANDS: [&str; 5] = ["install", "uninstall", "update", "doctor", "guard"];
 
 /// Parse the arguments after the program name. `interactive` tells whether
 /// stdin is a terminal.
@@ -125,8 +127,27 @@ fn command(word: &str, rest: &[&OsString]) -> Result<Command, String> {
         "uninstall" => no_extra(rest, Command::Uninstall),
         "update" => update(rest),
         "doctor" => no_extra(rest, Command::Doctor),
+        "guard" => guard(rest),
         _ => Err(format!("unknown command: {word}")),
     }
+}
+
+fn parse_client_value(
+    rest: &[&OsString],
+    i: &mut usize,
+    arg: &str,
+) -> Result<Option<Client>, String> {
+    if arg == "--client" {
+        let Some(value) = rest.get(*i + 1) else {
+            return Err("--client needs claude, opencode, antigravity or all".into());
+        };
+        *i += 1;
+        return Client::parse(&value.to_string_lossy()).map(Some);
+    }
+    if let Some(value) = arg.strip_prefix("--client=") {
+        return Client::parse(value).map(Some);
+    }
+    Ok(None)
 }
 
 fn install(rest: &[&OsString]) -> Result<Command, String> {
@@ -135,23 +156,34 @@ fn install(rest: &[&OsString]) -> Result<Command, String> {
     let mut i = 0;
     while i < rest.len() {
         let arg = rest[i].to_string_lossy();
-        match arg.as_ref() {
-            "--no-enforce" => enforce = false,
-            "--client" => {
-                let Some(value) = rest.get(i + 1) else {
-                    return Err("--client needs claude, opencode or all".into());
-                };
-                client = Client::parse(&value.to_string_lossy())?;
-                i += 1;
-            }
-            value if value.starts_with("--client=") => {
-                client = Client::parse(&value["--client=".len()..])?;
-            }
-            _ => return Err(format!("unexpected argument: {arg}")),
+        if let Some(parsed) = parse_client_value(rest, &mut i, arg.as_ref())? {
+            client = parsed;
+        } else if arg == "--no-enforce" {
+            enforce = false;
+        } else {
+            return Err(format!("unexpected argument: {arg}"));
         }
         i += 1;
     }
     Ok(Command::Install { enforce, client })
+}
+
+fn guard(rest: &[&OsString]) -> Result<Command, String> {
+    let mut client = Client::Claude;
+    let mut i = 0;
+    while i < rest.len() {
+        let arg = rest[i].to_string_lossy();
+        if let Some(parsed) = parse_client_value(rest, &mut i, arg.as_ref())? {
+            if parsed == Client::All {
+                return Err("guard --client expects claude, opencode or antigravity".into());
+            }
+            client = parsed;
+        } else {
+            return Err(format!("unexpected argument: {arg}"));
+        }
+        i += 1;
+    }
+    Ok(Command::Guard { client })
 }
 
 fn update(rest: &[&OsString]) -> Result<Command, String> {
@@ -237,6 +269,24 @@ mod tests {
                 );
             }
             assert_eq!(run(&["doctor"], interactive), Ok(Command::Doctor));
+            assert_eq!(
+                run(&["guard"], interactive),
+                Ok(Command::Guard {
+                    client: Client::Claude
+                })
+            );
+            assert_eq!(
+                run(&["guard", "--client", "antigravity"], interactive),
+                Ok(Command::Guard {
+                    client: Client::Antigravity
+                })
+            );
+            assert_eq!(
+                run(&["guard", "--client=opencode"], interactive),
+                Ok(Command::Guard {
+                    client: Client::Opencode
+                })
+            );
             for flag in ["--serve", "-s"] {
                 assert_eq!(run(&[flag], interactive), Ok(Command::Serve(None)));
                 assert_eq!(
@@ -314,6 +364,8 @@ mod tests {
         assert!(run(&["install", "--client"], true).is_err());
         assert!(run(&["install", "--client", "vim"], true).is_err());
         assert!(run(&["install", "--client="], true).is_err());
+        assert!(run(&["guard", "--client", "all"], true).is_err());
+        assert!(run(&["guard", "--nope"], true).is_err());
         assert!(run(&["uninstall", "x"], true).is_err());
         assert!(run(&["update", "x"], true).is_err());
         assert!(run(&["update", "--check", "x"], false).is_err());

@@ -25,7 +25,7 @@ use anyhow::Result;
 use astlens::cli::{self, Command};
 use astlens::index::cache::PersistentStore;
 use astlens::mcp::{AstLens, Workspace};
-use astlens::{doctor, install, libraries, update};
+use astlens::{doctor, guard, install, libraries, update};
 use rmcp::ServiceExt;
 use tracing_subscriber::EnvFilter;
 
@@ -53,18 +53,17 @@ fn cache_dir() -> Option<PathBuf> {
     if std::env::var_os("ASTLENS_NO_CACHE").is_some_and(|v| !v.is_empty() && v != "0") {
         return None;
     }
-    if let Some(dir) = std::env::var_os("ASTLENS_CACHE_DIR") {
-        return Some(dir.into());
+    guard::base_cache_dir()
+}
+
+fn root_file_from_env() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("ASTLENS_ROOT_FILE").filter(|v| !v.is_empty()) {
+        return Some(path.into());
     }
-    let base = std::env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("LOCALAPPDATA").map(PathBuf::from))
-        .or_else(|| {
-            std::env::var_os("HOME")
-                .or_else(|| std::env::var_os("USERPROFILE"))
-                .map(|h| PathBuf::from(h).join(".cache"))
-        })?;
-    Some(base.join("astlens"))
+    if std::env::var("ASTLENS_CLIENT").is_ok_and(|v| v.trim().eq_ignore_ascii_case("antigravity")) {
+        return guard::antigravity_root_file();
+    }
+    None
 }
 
 /// Drop stored results of deleted files on a background thread, so the
@@ -120,6 +119,7 @@ fn main() -> Result<()> {
         Command::Serve(root) => serve(root)?,
         Command::Update { check_only } => update::run(check_only)?,
         Command::Doctor => doctor::run()?,
+        Command::Guard { client } => guard::run(client)?,
     }
     Ok(())
 }
@@ -132,7 +132,11 @@ async fn serve(root: Option<PathBuf>) -> Result<()> {
     let base = if explicit {
         base
     } else {
-        base.with_implicit_root()
+        let implicit = base.with_implicit_root();
+        match root_file_from_env() {
+            Some(path) => implicit.with_root_file(path),
+            None => implicit,
+        }
     };
     let (persisted, sweep) = with_persistence(base);
     let mut workspace = persisted.with_libraries(libraries::default_roots());
