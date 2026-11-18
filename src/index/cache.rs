@@ -574,7 +574,37 @@ impl ParseCache {
                 max: self.max_file_bytes,
             });
         }
-        let bytes = std::fs::read(path).map_err(io_err)?;
+        let (len, mtime, bytes) = {
+            use std::io::Read as _;
+
+            let file = std::fs::File::open(path).map_err(io_err)?;
+            let meta = file.metadata().map_err(io_err)?;
+            if !meta.is_file() {
+                return Err(CacheError::NotAFile(path.to_path_buf()));
+            }
+            let len = meta.len();
+            let mtime = meta.modified().map_err(io_err)?;
+            if len > self.max_file_bytes {
+                return Err(CacheError::TooLarge {
+                    path: path.to_path_buf(),
+                    len,
+                    max: self.max_file_bytes,
+                });
+            }
+            let cap = (len as usize).min((self.max_file_bytes as usize).saturating_add(1));
+            let mut bytes = Vec::with_capacity(cap);
+            file.take(self.max_file_bytes.saturating_add(1))
+                .read_to_end(&mut bytes)
+                .map_err(io_err)?;
+            if bytes.len() as u64 > self.max_file_bytes {
+                return Err(CacheError::TooLarge {
+                    path: path.to_path_buf(),
+                    len: bytes.len() as u64,
+                    max: self.max_file_bytes,
+                });
+            }
+            (len, mtime, bytes)
+        };
         let blob = self.store.as_ref().map(|_| git::blob_hash(&bytes));
         let source = String::from_utf8(bytes).map_err(|_| CacheError::NotUtf8(path.into()))?;
 
