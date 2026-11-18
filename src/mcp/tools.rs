@@ -45,6 +45,10 @@ const MAX_CONTEXT_LINES: usize = 20;
 const MAX_HIT_LIMIT: usize = 5000;
 /// Most files one `list_files` call returns.
 const MAX_LIST_LIMIT: usize = 20000;
+/// Most tokens a budget-based call (`read_file_pruned`, `codebase_map`) accepts.
+const MAX_BUDGET_TOKENS: usize = 100_000;
+/// Largest plain-text (non-AST) file an edit tool reads into memory.
+const MAX_PLAIN_EDIT_BYTES: u64 = 16 * 1024 * 1024;
 /// Says what an empty result of a symbol search did not cover.
 const UNSEARCHED_NOTE: &str = "… not searched: hidden files, non-UTF-8 files, files over 2 MB\n";
 
@@ -817,12 +821,19 @@ impl Workspace {
         if !meta.is_file() {
             bail!("{} is not a regular file", self.display(path));
         }
-        if meta.len() > text::MAX_FILE_BYTES && parser::Lang::from_path(path).is_some() {
+        let is_source = parser::Lang::from_path(path).is_some();
+        let limit = if is_source {
+            text::MAX_FILE_BYTES
+        } else {
+            MAX_PLAIN_EDIT_BYTES
+        };
+        if meta.len() > limit {
             bail!(
-                "not written: {} is {} bytes, above the {} byte limit for edits to source files",
+                "not written: {} is {} bytes, above the {} byte limit for edits{}",
                 self.display(path),
                 meta.len(),
-                text::MAX_FILE_BYTES
+                limit,
+                if is_source { " to source files" } else { "" }
             );
         }
         let source = std::fs::read_to_string(path)
@@ -877,6 +888,7 @@ impl Workspace {
 
     pub fn read_pruned(&self, rel: &str, max_tokens: usize, keep: Vec<String>) -> Result<String> {
         let (root, path) = self.resolve_read(rel)?;
+        let max_tokens = max_tokens.min(MAX_BUDGET_TOKENS);
         let result = if parser::Lang::from_path(&path).is_some() {
             let file = self.cache.get(&path)?;
             let opts = PruneOptions { max_tokens, keep };
@@ -977,7 +989,7 @@ impl Workspace {
     ) -> Result<String> {
         let (root, base) = self.resolve_dir(dir)?;
         let opts = MapOptions {
-            max_tokens: max_tokens.max(1),
+            max_tokens: max_tokens.clamp(1, MAX_BUDGET_TOKENS),
             focus,
             max_files: self.max_files,
         };
@@ -2885,6 +2897,11 @@ mod tests {
         fs::write(dir.path().join("small.txt"), "a\nb\n").unwrap();
         let out = ws.read_pruned("small.txt", 100, Vec::new()).unwrap();
         assert!(out.ends_with("\na\nb\n"), "{out}");
+        let capped = ws.read_pruned("small.txt", usize::MAX, Vec::new()).unwrap();
+        assert!(
+            capped.contains(&format!("/{MAX_BUDGET_TOKENS} tokens")),
+            "{capped}"
+        );
     }
 
     #[test]
@@ -2897,10 +2914,16 @@ mod tests {
             .unwrap_err();
         assert!(err.to_string().contains("byte limit for edits"), "{err}");
         assert_eq!(fs::read_to_string(dir.path().join("big.rs")).unwrap(), big);
-        // Plain text has no syntax check, so its size does not matter.
+        // Plain text allows larger edits, up to `MAX_PLAIN_EDIT_BYTES`.
         fs::write(dir.path().join("big.txt"), &big).unwrap();
         ws.replace_text("big.txt", &[text_edit("fn a() {}", "fn b() {}")])
             .unwrap();
+        let huge = fs::File::create(dir.path().join("huge.txt")).unwrap();
+        huge.set_len(MAX_PLAIN_EDIT_BYTES + 1).unwrap();
+        let err = ws
+            .replace_text("huge.txt", &[text_edit("x", "y")])
+            .unwrap_err();
+        assert!(err.to_string().contains("byte limit for edits"), "{err}");
     }
 
     #[test]
