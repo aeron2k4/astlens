@@ -129,6 +129,12 @@ fn elide_bodies(
         let Some((start, end)) = sym.body else {
             continue;
         };
+        if symbols
+            .iter()
+            .any(|s| s.start_byte >= start && s.end_byte <= end && is_kept(s))
+        {
+            continue;
+        }
         covered_until = end;
         let body = &source[start..end];
         let placeholder = placeholder(lang, body, &source[end..]);
@@ -459,5 +465,36 @@ fn other() {
                 r.text
             );
         }
+    }
+
+    #[test]
+    fn keep_protects_nested_function_inside_outer_callable() {
+        let src = "\
+function outer() {
+    function inner() {
+        return 1 + 2;
+    }
+    function sibling() {
+        const a = 1;
+        const b = 2;
+        const c = 3;
+        const d = 4;
+        const e = 5;
+        const f = 6;
+        return a + b + c + d + e + f;
+    }
+    return inner() + sibling();
+}
+";
+        let parsed = parse_source(Lang::JavaScript, src).unwrap();
+        let opts = PruneOptions {
+            max_tokens: estimate_tokens(src) - 10,
+            keep: vec!["inner".into()],
+        };
+        let r = prune(Lang::JavaScript, src, &parsed.symbols, &opts);
+        assert_eq!(r.strategy, Strategy::ElidedBodies, "{}", r.text);
+        assert_eq!(r.elided_bodies, 1, "{}", r.text);
+        assert!(r.text.contains("return 1 + 2;"), "{}", r.text);
+        assert!(!r.text.contains("const f = 6;"), "{}", r.text);
     }
 }
