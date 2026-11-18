@@ -13,7 +13,9 @@ echo '# hi' >"$WS/NOTES.MD"
 echo 'fn up() {}' >"$WS/src/UP.RS"
 echo 'int x;' >"$WS/src/x.c++"
 echo 'int y;' >"$WS/src/y.H++"
+echo 'int i;' >"$WS/src/z.inl"
 echo 'int z;' >"$WS/src/z.ipp"
+echo 'int c;' >"$WS/src/t.tcc"
 echo 'int t;' >"$WS/src/t.tpp"
 echo 'func p():' >"$WS/src/player.GD"
 echo 'def a; end' >"$WS/src/cart.rb"
@@ -68,10 +70,13 @@ expect allow Read "{\"file_path\": \"$WS/src/robe.txt\"}" 'Read .txt with letter
 expect allow Read "{\"file_path\": \"$WS/NOTES.MD\"}" 'Read upper-case non-code'
 expect deny Grep '{"pattern": "x", "glob": "*.RS"}' 'Grep upper-case glob'
 expect deny Grep '{"pattern": "x", "glob": "*.c++"}' 'Grep .c++ glob'
+expect deny Grep '{"pattern": "x", "glob": "*.INL"}' 'Grep .INL glob'
 expect allow Grep '{"pattern": "x", "glob": "*.MD"}' 'Grep upper-case non-code glob'
 bash_cmd deny 'cat src/UP.RS'
 bash_cmd deny 'cat src/x.c++'
 bash_cmd deny 'head -n 5000 src/y.H++'
+bash_cmd deny 'cat src/z.inl'
+bash_cmd deny 'sed -n 1,5000p src/t.tcc'
 bash_cmd deny 'sed -n 1,5000p src/t.tpp'
 bash_cmd allow 'head src/y.H++'
 bash_cmd allow 'head src/main.rs'

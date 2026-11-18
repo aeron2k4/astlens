@@ -74,9 +74,8 @@ impl Lang {
             "go" => Lang::Go,
             // `parse_path` also tries C++ on a `.h` file that fails as C.
             "c" | "h" => Lang::C,
-            "cc" | "cpp" | "cxx" | "c++" | "hh" | "hpp" | "hxx" | "h++" | "ipp" | "tpp" => {
-                Lang::Cpp
-            }
+            "cc" | "cpp" | "cxx" | "c++" | "hh" | "hpp" | "hxx" | "h++" | "inl" | "ipp" | "tcc"
+            | "tpp" => Lang::Cpp,
             "java" => Lang::Java,
             "cs" => Lang::CSharp,
             "gd" => Lang::GdScript,
@@ -1508,6 +1507,8 @@ mod tests {
         assert_eq!(Lang::from_path(Path::new("x.mjs")), Some(Lang::JavaScript));
         assert_eq!(Lang::from_path(Path::new("x.h")), Some(Lang::C));
         assert_eq!(Lang::from_path(Path::new("x.hpp")), Some(Lang::Cpp));
+        assert_eq!(Lang::from_path(Path::new("x.inl")), Some(Lang::Cpp));
+        assert_eq!(Lang::from_path(Path::new("x.tcc")), Some(Lang::Cpp));
         assert_eq!(Lang::from_path(Path::new("X.java")), Some(Lang::Java));
         assert_eq!(Lang::from_path(Path::new("X.cs")), Some(Lang::CSharp));
         assert_eq!(
