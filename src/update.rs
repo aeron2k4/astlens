@@ -134,11 +134,11 @@ pub fn run(check_only: bool) -> Result<()> {
     }
 
     println!("Updating v{current} -> v{}", version_of(&tag));
-    let sums = fetch(&format!("{BASE}/{tag}/SHA256SUMS"), MAX_SUMS)?;
+    let sums = fetch(&asset_url(&tag, "SHA256SUMS"), MAX_SUMS)?;
     let sums = String::from_utf8_lossy(&sums);
     let expected = expected_hash(&sums, asset)
         .with_context(|| format!("{asset} is not listed in the release's SHA256SUMS"))?;
-    let download = fetch(&format!("{BASE}/{tag}/{asset}"), MAX_BINARY)?;
+    let download = fetch(&asset_url(&tag, asset), MAX_BINARY)?;
     let actual = hex(&Sha256::digest(&download));
     if actual != expected {
         bail!("checksum mismatch for {asset}: expected {expected}, downloaded {actual}");
@@ -156,8 +156,12 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 /// Where the release assets live, and the tag of the latest one.
-const BASE: &str = "https://github.com/aeron2k4/astlens/releases";
+const BASE: &str = "https://github.com/aeron2k4/astlens/releases/download";
 const LATEST: &str = "https://api.github.com/repos/aeron2k4/astlens/releases/latest";
+
+fn asset_url(tag: &str, name: &str) -> String {
+    format!("{BASE}/{tag}/{name}")
+}
 /// A checksum file is a few hundred bytes; a binary is tens of megabytes.
 const MAX_SUMS: u64 = 64 * 1024;
 const MAX_BINARY: u64 = 256 * 1024 * 1024;
@@ -444,5 +448,17 @@ mod tests {
             ("linux", "x86_64") | ("macos", _) | ("windows", "x86_64")
         );
         assert_eq!(current_asset().is_some(), expected);
+    }
+
+    #[test]
+    fn release_urls_use_the_download_path() {
+        assert_eq!(
+            asset_url("v0.7.0", "SHA256SUMS"),
+            "https://github.com/aeron2k4/astlens/releases/download/v0.7.0/SHA256SUMS"
+        );
+        assert_eq!(
+            asset_url("v0.7.0", "astlens-linux"),
+            "https://github.com/aeron2k4/astlens/releases/download/v0.7.0/astlens-linux"
+        );
     }
 }
