@@ -263,6 +263,9 @@ pub struct FileDiff {
 /// Line-level diff of the working tree (or the index when `staged`) against
 /// `base`, limited to files under `root`, with paths relative to it.
 pub fn diff(root: &Path, base: &str, staged: bool) -> Result<Vec<FileDiff>> {
+    if base.trim().is_empty() || base.trim_start().starts_with('-') {
+        bail!("invalid git revision: {base:?}");
+    }
     let mut cmd = Command::new("git");
     // Fixed prefixes and unquoted paths whatever the user's git config says.
     cmd.arg("-C").arg(root).args([
@@ -435,6 +438,10 @@ fn header_path(text: &str, prefix: &str) -> Option<String> {
 /// Contents of `path` (relative to `root`) at `rev`, or in the index when
 /// `rev` is empty; `None` when it does not exist there.
 pub fn show(root: &Path, rev: &str, path: &str) -> Result<Option<String>> {
+    let rev = rev.trim();
+    if rev.starts_with('-') {
+        bail!("invalid git revision: {rev:?}");
+    }
     let output = Command::new("git")
         .arg("-C")
         .arg(root)
@@ -711,5 +718,16 @@ mod tests {
     fn status_outside_repo_is_error() {
         let dir = tempfile::tempdir().unwrap();
         assert!(status(dir.path()).is_err());
+    }
+
+    #[test]
+    fn rejects_option_like_revisions() {
+        let dir = tempfile::tempdir().unwrap();
+        for bad in ["", "   ", "-p", "--output=/tmp/x", " -n"] {
+            assert!(diff(dir.path(), bad, false).is_err(), "{bad:?}");
+        }
+        for bad in ["-p", "--format=raw", " -s"] {
+            assert!(show(dir.path(), bad, "a.rs").is_err(), "{bad:?}");
+        }
     }
 }
