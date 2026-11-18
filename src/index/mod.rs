@@ -211,12 +211,13 @@ struct Candidate {
     index: usize,
 }
 
-/// Search symbol names across all supported files under `root`. Files are
-/// parsed lazily through `cache`, in parallel, on first search; later
-/// searches score the compact names it keeps and read back only the files
-/// of the hits they return.
+/// Search symbol names across all supported files under `dir` (which is inside
+/// `root` or a library directory). Files are parsed lazily through `cache`, in
+/// parallel, on first search; later searches score the compact names it keeps
+/// and read back only the files of the hits they return.
 pub fn search_symbols(
     root: &Path,
+    dir: &Path,
     cache: &ParseCache,
     query: &str,
     opts: &SearchOptions,
@@ -231,7 +232,7 @@ pub fn search_symbols(
         };
     }
     let query = Query::new(query);
-    let (files, truncated) = files_under(root, root, opts.max_files);
+    let (files, truncated) = files_under(root, dir, opts.max_files);
     let files: Vec<PathBuf> = files
         .into_iter()
         .filter(|p| Lang::from_path(p).is_some())
@@ -352,7 +353,13 @@ mod tests {
     fn ranks_exact_then_prefix_then_substring() {
         let dir = fixture();
         let cache = ParseCache::default();
-        let hits = search_symbols(dir.path(), &cache, "parse", &SearchOptions::default());
+        let hits = search_symbols(
+            dir.path(),
+            dir.path(),
+            &cache,
+            "parse",
+            &SearchOptions::default(),
+        );
         let names: Vec<_> = hits.iter().map(|h| h.qualified_name.as_str()).collect();
         assert_eq!(
             names,
@@ -371,7 +378,7 @@ mod tests {
             limit: 1,
             ..Default::default()
         };
-        let hits = search_symbols(dir.path(), &cache, "PARSE", &opts);
+        let hits = search_symbols(dir.path(), dir.path(), &cache, "PARSE", &opts);
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].name, "parse_all");
     }
@@ -393,7 +400,7 @@ mod tests {
             limit: 1,
             ..Default::default()
         };
-        let hits = search_symbols(root, &cache, "search", &opts);
+        let hits = search_symbols(root, root, &cache, "search", &opts);
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].name, "search");
         assert_eq!(hits[0].path, "z.rs");
@@ -402,7 +409,7 @@ mod tests {
             limit: 2,
             ..Default::default()
         };
-        let hits = search_symbols(root, &cache, "search", &opts);
+        let hits = search_symbols(root, root, &cache, "search", &opts);
         let names: Vec<_> = hits.iter().map(|h| h.name.as_str()).collect();
         assert_eq!(names, ["search", "search_all"]);
 
@@ -410,7 +417,7 @@ mod tests {
             limit: 0,
             ..Default::default()
         };
-        assert!(search_symbols(root, &cache, "search", &opts).is_empty());
+        assert!(search_symbols(root, root, &cache, "search", &opts).is_empty());
     }
 
     #[test]
@@ -434,6 +441,45 @@ mod tests {
     fn empty_query_returns_nothing() {
         let dir = fixture();
         let cache = ParseCache::default();
-        assert!(search_symbols(dir.path(), &cache, "  ", &SearchOptions::default()).is_empty());
+        assert!(
+            search_symbols(
+                dir.path(),
+                dir.path(),
+                &cache,
+                "  ",
+                &SearchOptions::default()
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn searches_within_a_subdirectory_or_external_directory() {
+        let dir = fixture();
+        let cache = ParseCache::default();
+        let sub_hits = search_symbols(
+            dir.path(),
+            &dir.path().join("src"),
+            &cache,
+            "parse",
+            &SearchOptions::default(),
+        );
+        assert!(!sub_hits.is_empty());
+        assert!(sub_hits.iter().all(|h| h.path == "src/lib.rs"));
+        assert!(!sub_hits.iter().any(|h| h.name == "reparse"));
+
+        let ext = tempfile::tempdir().unwrap();
+        let ext_file = ext.path().join("dep.rs");
+        fs::write(&ext_file, "pub fn dep_parse() {}\n").unwrap();
+        let ext_hits = search_symbols(
+            dir.path(),
+            ext.path(),
+            &cache,
+            "dep_parse",
+            &SearchOptions::default(),
+        );
+        assert_eq!(ext_hits.len(), 1);
+        assert_eq!(ext_hits[0].path, slash_path(&ext_file));
+        assert_eq!(ext_hits[0].name, "dep_parse");
     }
 }

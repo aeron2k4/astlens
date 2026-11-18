@@ -335,6 +335,10 @@ async fn mcp_session_over_jsonrpc() {
             json!({"name": "search_symbols", "arguments": {"query": "stop"}}),
             "app.py:5-6 [method] App::stop — def stop(self)\n",
         ),
+        (
+            json!({"name": "search_symbols", "arguments": {"query": "stop", "dir": "app.py"}}),
+            "app.py:5-6 [method] App::stop — def stop(self)\n",
+        ),
         (json!({"name": "list_files", "arguments": {}}), "app.py\n"),
         (
             json!({"name": "read_lines", "arguments": {"path": "app.py", "start": 5, "end": 5}}),

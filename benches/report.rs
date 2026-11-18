@@ -148,7 +148,7 @@ fn bench_corpus(name: &str, root: &Path) -> CorpusReport {
 
     let cache = ParseCache::new(usize::MAX, MAX_FILE_BYTES).with_store(open_store());
     let start = Instant::now();
-    index::search_symbols(root, &cache, QUERIES[0], &opts);
+    index::search_symbols(root, root, &cache, QUERIES[0], &opts);
     let search_cold = start.elapsed();
     cache.flush();
 
@@ -156,7 +156,7 @@ fn bench_corpus(name: &str, root: &Path) -> CorpusReport {
     for _ in 0..WARM_ROUNDS {
         for q in QUERIES {
             let start = Instant::now();
-            index::search_symbols(root, &cache, q, &opts);
+            index::search_symbols(root, root, &cache, q, &opts);
             warm.push(ms(start.elapsed()));
         }
     }
@@ -164,7 +164,7 @@ fn bench_corpus(name: &str, root: &Path) -> CorpusReport {
 
     let cache = ParseCache::new(usize::MAX, MAX_FILE_BYTES).with_store(open_store());
     let start = Instant::now();
-    index::search_symbols(root, &cache, QUERIES[0], &opts);
+    index::search_symbols(root, root, &cache, QUERIES[0], &opts);
     let search_restart = start.elapsed();
     let stats = cache.stats();
 

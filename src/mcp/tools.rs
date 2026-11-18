@@ -309,27 +309,25 @@ impl Workspace {
     }
 
     pub fn search(&self, query: &str, kind: Option<SymbolKind>, limit: usize) -> String {
-        let state = self.root_state();
-        if let Err(err) = self.require_scoped_root(&state) {
-            return format!("{err}\n");
-        }
-        self.search_in(&state.path, query, kind, limit)
+        self.search_checked(query, None, kind, limit)
+            .unwrap_or_else(|err| format!("{err}\n"))
     }
 
     fn search_checked(
         &self,
         query: &str,
+        dir: Option<&str>,
         kind: Option<SymbolKind>,
         limit: usize,
     ) -> Result<String> {
-        let state = self.root_state();
-        self.require_scoped_root(&state)?;
-        Ok(self.search_in(&state.path, query, kind, limit))
+        let (root, base) = self.resolve_dir(dir)?;
+        Ok(self.search_in(&root, &base, query, kind, limit))
     }
 
     fn search_in(
         &self,
         root: &Path,
+        base: &Path,
         query: &str,
         kind: Option<SymbolKind>,
         limit: usize,
@@ -339,7 +337,7 @@ impl Workspace {
             limit: limit.min(MAX_HIT_LIMIT),
             max_files: self.max_files,
         };
-        let hits = index::search_symbols(root, &self.cache, query, &opts);
+        let hits = index::search_symbols(root, base, &self.cache, query, &opts);
         let mut note = self.truncation_note(hits.truncated);
         if hits.incomplete > 0 {
             let _ = writeln!(
@@ -1101,16 +1099,48 @@ impl Workspace {
         Ok(out)
     }
 
+    fn resolve_git_dir(&self, dir: Option<&str>) -> Result<(PathBuf, PathBuf)> {
+        let state = self.root_state();
+        let (root, base) = match dir {
+            Some(d) if !d.trim().is_empty() => {
+                let path = canonical_in(&state.path, d)?;
+                if !path.starts_with(&state.path) {
+                    if self.in_library(&state.path, &path) {
+                        bail!("{d} is a library source, outside the workspace repository");
+                    }
+                    bail!("path escapes the workspace root: {d}");
+                }
+                (state.path, path)
+            }
+            _ => {
+                self.require_scoped_root(&state)?;
+                (state.path.clone(), state.path)
+            }
+        };
+        if !base.is_dir() {
+            bail!("not a directory: {}", self.display_in(&root, &base));
+        }
+        Ok((root, base))
+    }
+
     /// Symbols added, modified or removed between `base` and the working
     /// tree (or the index when `staged`), grouped by file.
     pub fn changed_symbols(&self, base: &str, staged: bool) -> Result<String> {
+        self.changed_symbols_in(base, staged, None)
+    }
+
+    pub fn changed_symbols_in(
+        &self,
+        base: &str,
+        staged: bool,
+        dir: Option<&str>,
+    ) -> Result<String> {
         let base = base.trim();
         if base.is_empty() || base.starts_with('-') {
             bail!("invalid base revision {base:?}");
         }
-        let state = self.root_state();
-        self.require_scoped_root(&state)?;
-        let files = changes::changed_symbols(&state.path, DiffSpec { base, staged })?;
+        let (root, dir_path) = self.resolve_git_dir(dir)?;
+        let files = changes::changed_symbols(&dir_path, DiffSpec { base, staged })?;
         let side = if staged {
             "the index"
         } else {
@@ -1121,15 +1151,12 @@ impl Workspace {
         }
         let mut out = String::new();
         for f in &files {
+            let shown = self.display_in(&root, &dir_path.join(&f.path));
             if !f.parsed {
-                let _ = writeln!(
-                    out,
-                    "{} (not parsed): {} changed lines",
-                    f.path, f.other_lines
-                );
+                let _ = writeln!(out, "{shown} (not parsed): {} changed lines", f.other_lines);
                 continue;
             }
-            let _ = writeln!(out, "{}", f.path);
+            let _ = writeln!(out, "{shown}");
             for c in &f.symbols {
                 let range = format!("L{}-{}", c.start_line, c.end_line);
                 let range = if c.change == Change::Removed {
@@ -1153,20 +1180,25 @@ impl Workspace {
     }
 
     pub fn git_status(&self) -> Result<String> {
-        let state = self.root_state();
-        self.require_scoped_root(&state)?;
-        let entries = git::status(&state.path)?;
+        self.git_status_in(None)
+    }
+
+    pub fn git_status_in(&self, dir: Option<&str>) -> Result<String> {
+        let (root, dir_path) = self.resolve_git_dir(dir)?;
+        let entries = git::status(&dir_path)?;
         if entries.is_empty() {
             return Ok("working tree clean\n".into());
         }
         let mut out = String::new();
         for e in entries {
+            let path = self.display_in(&root, &dir_path.join(&e.path));
             match e.renamed_from {
                 Some(from) => {
-                    let _ = writeln!(out, "{} {from} -> {}", e.code, e.path);
+                    let from = self.display_in(&root, &dir_path.join(&from));
+                    let _ = writeln!(out, "{} {from} -> {path}", e.code);
                 }
                 None => {
-                    let _ = writeln!(out, "{} {}", e.code, e.path);
+                    let _ = writeln!(out, "{} {path}", e.code);
                 }
             }
         }
@@ -1587,6 +1619,10 @@ pub struct OutlineParams {
 pub struct SearchParams {
     /// Symbol name or fragment; case-insensitive, exact matches rank first.
     pub query: String,
+    /// Sub-directory or file relative to the workspace root to search in, or
+    /// the absolute path of a dependency source. Default: the root.
+    #[serde(default)]
+    pub dir: Option<String>,
     /// Restrict results to one symbol kind.
     #[serde(default)]
     pub kind: Option<SymbolKind>,
@@ -1689,6 +1725,18 @@ pub struct ChangedSymbolsParams {
     /// Compare the staged changes (the index) instead of the working tree.
     #[serde(default)]
     pub staged: Option<bool>,
+    /// Sub-directory relative to the workspace root to inspect. Default:
+    /// the root.
+    #[serde(default)]
+    pub dir: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct GitStatusParams {
+    /// Sub-directory relative to the workspace root to inspect. Default:
+    /// the root.
+    #[serde(default)]
+    pub dir: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -1876,7 +1924,12 @@ impl AstLens {
         Parameters(p): Parameters<SearchParams>,
     ) -> Result<String, String> {
         self.run(move |ws| {
-            ws.search_checked(&p.query, p.kind, p.limit.unwrap_or(DEFAULT_SEARCH_LIMIT))
+            ws.search_checked(
+                &p.query,
+                p.dir.as_deref(),
+                p.kind,
+                p.limit.unwrap_or(DEFAULT_SEARCH_LIMIT),
+            )
         })
         .await
     }
@@ -2112,9 +2165,10 @@ impl AstLens {
         Parameters(p): Parameters<ChangedSymbolsParams>,
     ) -> Result<String, String> {
         self.run(move |ws| {
-            ws.changed_symbols(
+            ws.changed_symbols_in(
                 p.base.as_deref().unwrap_or("HEAD"),
                 p.staged.unwrap_or(false),
+                p.dir.as_deref(),
             )
         })
         .await
@@ -2129,8 +2183,11 @@ impl AstLens {
             open_world_hint = false
         )
     )]
-    async fn git_status(&self) -> Result<String, String> {
-        self.run(move |ws| ws.git_status()).await
+    async fn git_status(
+        &self,
+        Parameters(p): Parameters<GitStatusParams>,
+    ) -> Result<String, String> {
+        self.run(move |ws| ws.git_status_in(p.dir.as_deref())).await
     }
 }
 
@@ -3617,7 +3674,7 @@ mod tests {
         assert!(ws.codebase_map(None, 500, vec![]).is_err());
         assert!(ws.search_text("a", false, false, None, 10).is_err());
         assert!(ws.find_references("a", None, false, 10).is_err());
-        assert!(ws.search_checked("a", None, 10).is_err());
+        assert!(ws.search_checked("a", None, None, 10).is_err());
         assert!(ws.changed_symbols("HEAD", false).is_err());
         assert!(ws.git_status().is_err());
         let edit_err = ws
@@ -3629,6 +3686,17 @@ mod tests {
         // Explicit dir-scoped reads and single-file reads stay allowed.
         assert!(ws.list_files(Some(&sub_str), 10).unwrap().contains("a.rs"));
         assert!(ws.outline(&file_str, None).unwrap().contains("fn a()"));
+        assert!(
+            ws.search_checked("a", Some(&sub_str), None, 10)
+                .unwrap()
+                .contains("fn a()")
+        );
+        let lib_dir_str = lib.to_string_lossy().into_owned();
+        assert!(
+            ws.search_checked("dep", Some(&lib_dir_str), None, 10)
+                .unwrap()
+                .contains("fn dep()")
+        );
 
         // Setting an explicit client root lifts the guardrails and keeps external libraries usable.
         ws.set_client_root(&sub).unwrap();
@@ -3641,5 +3709,63 @@ mod tests {
                 .unwrap()
                 .contains("pub fn dep()")
         );
+    }
+
+    #[test]
+    fn git_and_symbol_tools_scope_to_dir() {
+        let (dir, ws) = workspace();
+        let root = dir.path();
+        fs::create_dir_all(root.join("sub")).unwrap();
+        fs::write(root.join("sub/mod.rs"), "pub fn sub_fn() {}\n").unwrap();
+        fs::write(root.join("outside.rs"), "pub fn outside_fn() {}\n").unwrap();
+
+        let scoped = ws.search_checked("sub_fn", Some("sub"), None, 10).unwrap();
+        assert!(
+            scoped.contains("sub/mod.rs:1-1 [function] sub_fn"),
+            "{scoped}"
+        );
+        assert!(
+            ws.search_checked("outside_fn", Some("sub"), None, 10)
+                .unwrap()
+                .starts_with("no symbols matching")
+        );
+
+        let git = |args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .arg("-C")
+                .arg(root)
+                .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
+                .args(args)
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "git {args:?}");
+        };
+        git(&["init", "-q"]);
+        git(&["add", "."]);
+        git(&["commit", "-qm", "init"]);
+
+        fs::write(
+            root.join("outside.rs"),
+            "pub fn outside_fn() { let x = 1; }\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("sub/mod.rs"),
+            "pub fn sub_fn() {}\npub fn added_fn() {}\n",
+        )
+        .unwrap();
+
+        let status = ws.git_status_in(Some("sub")).unwrap();
+        assert_eq!(status, " M sub/mod.rs\n");
+
+        let changed = ws.changed_symbols_in("HEAD", false, Some("sub")).unwrap();
+        assert_eq!(
+            changed,
+            "sub/mod.rs\n  added     [function] added_fn  L2-2\n"
+        );
+
+        let not_dir = ws.git_status_in(Some("sub/mod.rs")).unwrap_err();
+        assert!(not_dir.to_string().contains("not a directory"), "{not_dir}");
     }
 }
