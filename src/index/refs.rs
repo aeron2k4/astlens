@@ -259,13 +259,10 @@ pub fn find_references(
             .filter_map(|o| {
                 // The name in a Go `package` clause is no use of anything, and
                 // is no mention either, so a file holding only that is skipped
-                // above: left out here too, it is never reported. The clause is
-                // the file's first line, so only there is it worth looking
-                // back for the keyword.
-                if go
-                    && o.start_byte < 256
-                    && mentions::is_package_clause(&file.source.as_bytes()[..o.start_byte])
-                {
+                // above: left out here too, it is never reported. Files often
+                // open with a long license header before `package`, so check at
+                // any offset.
+                if go && mentions::is_package_clause(&file.source.as_bytes()[..o.start_byte]) {
                     return None;
                 }
                 let def_kind = definitions
@@ -414,8 +411,14 @@ mod tests {
     fn a_go_package_clause_is_no_reference() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        // One file only names the package, the other also uses the name.
-        fs::write(root.join("a.go"), "package store\n\nfunc A() {}\n").unwrap();
+        // One file only names the package (after a long license banner), the
+        // other also uses the name.
+        let banner = format!("// {}\n", "license ".repeat(50));
+        fs::write(
+            root.join("a.go"),
+            format!("{banner}package store\n\nfunc A() {{}}\n"),
+        )
+        .unwrap();
         fs::write(
             root.join("b.go"),
             "package store\n\nfunc B() { store := 1; _ = store }\n",
