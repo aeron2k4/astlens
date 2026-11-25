@@ -567,6 +567,46 @@ command_argv() {
   ARGV=("${seg[@]:j}")
 }
 
+git_grep() {
+  local -a args=("$@")
+  local i=1 a
+  GIT_SEARCH_DIR=$dir
+  while ((i < ${#args[@]})); do
+    a=${args[i]}
+    if [ "$a" = grep ]; then
+      ARGV=("${args[0]}" "${args[@]:i}")
+      return 0
+    fi
+    case "$a" in
+      -C)
+        ((i + 1 < ${#args[@]})) || return 1
+        GIT_SEARCH_DIR=$(absolute "${args[i + 1]}" "$GIT_SEARCH_DIR")
+        ((i += 2))
+        ;;
+      -c | --config-env | --git-dir | --work-tree | --namespace | --super-prefix)
+        ((i + 1 < ${#args[@]})) || return 1
+        ((i += 2))
+        ;;
+      --no-pager | --paginate | --no-replace-objects | --no-optional-locks | \
+        --no-lazy-fetch | --literal-pathspecs | --glob-pathspecs | --noglob-pathspecs | \
+        --icase-pathspecs | --bare | --version | --help | --html-path | --man-path | \
+        --info-path | -p | --exec-path | --)
+        ((i++))
+        ;;
+      --config-env=* | --git-dir=* | --work-tree=* | --namespace=* | \
+        --super-prefix=* | --exec-path=* | -c?*)
+        ((i++))
+        ;;
+      -C?*)
+        GIT_SEARCH_DIR=$(absolute "${a#-C}" "$GIT_SEARCH_DIR")
+        ((i++))
+        ;;
+      *) return 1 ;;
+    esac
+  done
+  return 1
+}
+
 check_bash() {
   [[ "$cmd" =~ $SEARCH_CMD || "$cmd" =~ $READ_CMD ]] || exit 0
   lex "$cmd"
@@ -592,7 +632,7 @@ check_bash() {
             deny "Searching source code with ${argv[0]##*/} is blocked. $GREP_HINT"
           ;;
         git)
-          [ "${argv[1]-}" = grep ] && check_search "$dir" 0 "${argv[@]}" &&
+          git_grep "${argv[@]}" && check_search "$GIT_SEARCH_DIR" 0 "${ARGV[@]}" &&
             deny "Searching source code with git grep is blocked. $GREP_HINT"
           ;;
         cat | tac | nl | more | less | most | bat | batcat | head | tail | sed | awk | gawk | mawk | nawk)

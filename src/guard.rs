@@ -902,6 +902,70 @@ fn command_argv<'a>(seg: &'a [&'a str]) -> (&'a [&'a str], bool) {
     (&seg[j..], under_rtk)
 }
 
+fn git_grep_argv<'a>(argv: &[&'a str], dir: &str) -> Option<(Vec<&'a str>, String)> {
+    let first = argv.first()?.rsplit(['/', '\\']).next()?;
+    if first != "git" {
+        return None;
+    }
+
+    let mut i = 1;
+    let mut search_dir = dir.to_string();
+    while i < argv.len() {
+        let arg = argv[i];
+        if arg == "grep" {
+            let mut grep_argv = Vec::with_capacity(argv.len() - i + 1);
+            grep_argv.push(argv[0]);
+            grep_argv.extend_from_slice(&argv[i..]);
+            return Some((grep_argv, search_dir));
+        }
+
+        match arg {
+            "-C" => {
+                search_dir = absolute(argv.get(i + 1)?, &search_dir);
+                i += 2;
+            }
+            "-c" | "--config-env" | "--git-dir" | "--work-tree" | "--namespace"
+            | "--super-prefix" => {
+                argv.get(i + 1)?;
+                i += 2;
+            }
+            "--no-pager"
+            | "--paginate"
+            | "--no-replace-objects"
+            | "--no-optional-locks"
+            | "--no-lazy-fetch"
+            | "--literal-pathspecs"
+            | "--glob-pathspecs"
+            | "--noglob-pathspecs"
+            | "--icase-pathspecs"
+            | "--bare"
+            | "--version"
+            | "--help"
+            | "--html-path"
+            | "--man-path"
+            | "--info-path"
+            | "-p" => i += 1,
+            _ if arg.starts_with("--config-env=")
+                || arg.starts_with("--git-dir=")
+                || arg.starts_with("--work-tree=")
+                || arg.starts_with("--namespace=")
+                || arg.starts_with("--super-prefix=")
+                || arg.starts_with("--exec-path=")
+                || arg.starts_with("-c") && arg.len() > 2 =>
+            {
+                i += 1;
+            }
+            _ if arg.starts_with("-C") && arg.len() > 2 => {
+                search_dir = absolute(&arg[2..], &search_dir);
+                i += 1;
+            }
+            "--exec-path" => i += 1,
+            _ => return None,
+        }
+    }
+    None
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SearchKind {
     Grep,
@@ -1513,8 +1577,10 @@ fn check_bash(
                     ));
                 }
             }
-            "git" if argv.get(1).copied() == Some("grep") => {
-                if check_search(&dir, cwd, false, argv) {
+            "git" => {
+                if let Some((grep_argv, search_dir)) = git_grep_argv(argv, &dir)
+                    && check_search(&search_dir, cwd, false, &grep_argv)
+                {
                     return Some(format!(
                         "Searching source code with git grep is blocked. {}",
                         hints.grep_hint

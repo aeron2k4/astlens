@@ -125,6 +125,8 @@ bash_cmd allow 'cat src'
 
 while IFS= read -r c; do [ -n "$c" ] && bash_cmd deny "$c"; done <<'CASES'
 grep -rn foo src
+git -C . grep .
+git --no-pager -C . grep .
 rtk grep foo src
 cat src/main.rs
 cat notes.md
