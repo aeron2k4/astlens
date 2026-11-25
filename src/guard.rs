@@ -966,6 +966,48 @@ fn git_grep_argv<'a>(argv: &[&'a str], dir: &str) -> Option<(Vec<&'a str>, Strin
     None
 }
 
+fn cd_target(argv: &[&str], dir: &str) -> Option<String> {
+    let mut i = 1;
+    while i < argv.len() {
+        let arg = argv[i];
+        if arg == "--" {
+            i += 1;
+            break;
+        }
+        if arg == "-" {
+            if i + 1 != argv.len() {
+                return None;
+            }
+            let old = std::env::var("OLDPWD").ok()?;
+            return Some(absolute(&old, dir)).filter(|path| Path::new(path).is_dir());
+        }
+        if arg.starts_with('-') && arg.len() > 1 {
+            if arg[1..]
+                .chars()
+                .all(|flag| matches!(flag, 'L' | 'P' | 'e' | '@'))
+            {
+                i += 1;
+                continue;
+            }
+            return None;
+        }
+        break;
+    }
+
+    if i + 1 < argv.len() {
+        return None;
+    }
+    let target = match argv.get(i).copied() {
+        Some("") => return None,
+        Some(target) => target.to_string(),
+        None => std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .ok()?,
+    };
+    let target = absolute(&target, dir);
+    Path::new(&target).is_dir().then_some(target)
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SearchKind {
     Grep,
@@ -1563,11 +1605,9 @@ fn check_bash(
 
         match prog {
             "cd" => {
-                let target = argv.get(1).copied().filter(|s| !s.is_empty());
-                let home = std::env::var("HOME")
-                    .or_else(|_| std::env::var("USERPROFILE"))
-                    .unwrap_or_default();
-                dir = absolute(target.unwrap_or(&home), &dir);
+                if let Some(target) = cd_target(argv, &dir) {
+                    dir = target;
+                }
             }
             "grep" | "egrep" | "fgrep" | "ugrep" | "rg" => {
                 if check_search(&dir, cwd, piped, argv) {

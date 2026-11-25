@@ -151,6 +151,11 @@ cat src/*.{rs,py}
 cat < src/main.rs
 cat src/main.rs 2>/dev/null
 cd src && cat main.rs
+cd -P src && cat main.rs
+cd -P src missing; cat src/main.rs
+cd -- src && cat main.rs
+cd missing && cat src/main.rs
+cd missing; cat src/main.rs
 if true; then cat src/main.rs; fi
 tac src/main.rs
 nl src/main.rs

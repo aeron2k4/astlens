@@ -607,6 +607,40 @@ git_grep() {
   return 1
 }
 
+cd_target() {
+  local -a args=("$@")
+  local i=1 a target
+  while ((i < ${#args[@]})); do
+    a=${args[i]}
+    case "$a" in
+      --) ((i++)); break ;;
+      -)
+        ((i + 1 == ${#args[@]})) || return 1
+        target=${OLDPWD:-}
+        [ -n "$target" ] || return 1
+        CD_TARGET=$(absolute "$target" "$dir")
+        [ -d "$CD_TARGET" ]
+        return
+        ;;
+      -* )
+        [[ "${a#-}" =~ ^[LPe@]+$ ]] || return 1
+        ((i++))
+        ;;
+      *) break ;;
+    esac
+  done
+  if ((i < ${#args[@]})); then
+    ((i + 1 == ${#args[@]})) || return 1
+    target=${args[i]}
+    [ -n "$target" ] || return 1
+  else
+    target=${HOME:-}
+    [ -n "$target" ] || return 1
+  fi
+  CD_TARGET=$(absolute "$target" "$dir")
+  [ -d "$CD_TARGET" ]
+}
+
 check_bash() {
   [[ "$cmd" =~ $SEARCH_CMD || "$cmd" =~ $READ_CMD ]] || exit 0
   lex "$cmd"
@@ -626,7 +660,9 @@ check_bash() {
       local -a argv=("${ARGV[@]}")
       local under_rtk=$UNDER_RTK
       case "${argv[0]##*/}" in
-        cd) dir=$(absolute "${argv[1]:-$HOME}" "$dir") ;;
+        cd)
+          cd_target "${argv[@]}" && dir=$CD_TARGET
+          ;;
         grep | egrep | fgrep | ugrep | rg)
           check_search "$dir" "$piped" "${argv[@]}" &&
             deny "Searching source code with ${argv[0]##*/} is blocked. $GREP_HINT"
