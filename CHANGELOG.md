@@ -3,6 +3,24 @@
 All notable changes to astlens. Versions follow [Semantic Versioning](https://semver.org/).
 Each entry ends with the commits that made it.
 
+## 0.8.1 (2026-11-25)
+
+### Fixed
+
+- Both source-read guards resolve symlink aliases, including chains and aliases
+  outside the workspace, before checking workspace source files (`5c993bb`).
+- Full source reads redirected to files are blocked, including redirects without
+  spaces and redirects followed by counting or limiting pipelines. Redirects to
+  `/dev/null` and bounded reads remain allowed (`6939291`).
+- `git grep` checks recognize Git global options such as `-C` and `--no-pager`
+  and resolve repeated `-C` paths from the preceding directory (`7eec76e`).
+- Shell directory tracking parses `cd` options such as `-P` and `--`, and keeps
+  the previous directory when the target is missing or arguments are invalid
+  (`2147d73`).
+- Command wrappers such as `time -p`, `nice -n`, `sudo -u`, and `env -i` preserve
+  source-read checks. Unsupported options that change directories or split
+  commands are blocked (`ef9bc39`).
+
 ## 0.8.0 (2026-11-18)
 
 ### Added
