@@ -12,8 +12,8 @@
 # - cat/tac/nl/more/less/most/bat/head/tail/sed/awk and rtk read/smart in Bash:
 #   deny reading source files inside the working directory, the same as Read.
 #   Output limited to at most $ASTLENS_MAX_READ_LINES lines (head -n 50,
-#   sed -n 1,50p, rtk read --head-lines 50), sent to a file, counted or hashed
-#   (cat x.rs | wc -l), and in-place edits (sed -i) are allowed.
+#   sed -n 1,50p, rtk read --head-lines 50), sent to /dev/null, counted or
+#   hashed (cat x.rs | wc -l), and in-place edits (sed -i) are allowed.
 # Bash parsing is best effort: commands it cannot see into (eval, scripts,
 # find -exec, xargs, "$(cat x.rs)" inside quotes) and other programs that can
 # print a file (python, xxd, cut) are allowed.
@@ -188,9 +188,19 @@ lex() {
           heredocs=()
         fi
         ;;
+      '>')
+        if [[ ! "$w" =~ ^[0-9]+$ ]]; then
+          ((has)) && WORDS+=("$w"); w=''
+        fi
+        w+='>'
+        if [ "${s:i+1:1}" = '>' ]; then w+='>'; ((i++)); fi
+        if [ "${s:i+1:1}" = '&' ]; then w+='&'; ((i++)); fi
+        WORDS+=("$w"); w=''; has=0
+        ;;
       '<')
         if [ "${s:i:3}" = '<<<' ]; then
-          w+='<<<'; has=1; ((i += 2))
+          ((has)) && WORDS+=("$w"); w=''; has=0
+          WORDS+=('<<<'); ((i += 2))
         elif [ "${s:i:2}" = '<<' ]; then
           ((has)) && WORDS+=("$w"); w=''; has=0
           ((i += 2))
@@ -208,7 +218,8 @@ lex() {
           heredocs+=("$d")
           ((i--))
         else
-          w+=$c; has=1
+          ((has)) && WORDS+=("$w"); w=''; has=0
+          WORDS+=('<')
         fi
         ;;
       '$')
@@ -371,13 +382,16 @@ is_code_path() {
 # Split redirections off an argument list: ARGS gets the rest, INPUT the file
 # after <, and STDOUT_GONE is 1 when standard output goes to a file.
 parse_redirects() {
-  ARGS=(); INPUT=''; STDOUT_GONE=0
+  ARGS=(); INPUT=''; STDOUT_GONE=0; STDOUT_TARGET=''
   while (($#)); do
     case "$1" in
-      '>' | '>>' | 1'>' | 1'>>') STDOUT_GONE=1; shift ;;
+      '>' | '>>' | 1'>' | 1'>>') STDOUT_GONE=1; STDOUT_TARGET=${2-}; shift ;;
       2'>' | 2'>>' | '<<<') shift ;;
       '<') INPUT=${2-}; shift ;;
-      '>'* | 1'>'*) STDOUT_GONE=1 ;;
+      1'>>'*) STDOUT_GONE=1; STDOUT_TARGET=${1#1>>} ;;
+      '>>'*) STDOUT_GONE=1; STDOUT_TARGET=${1#>>} ;;
+      1'>'*) STDOUT_GONE=1; STDOUT_TARGET=${1#1>} ;;
+      '>'*) STDOUT_GONE=1; STDOUT_TARGET=${1#>} ;;
       2'>'* | '<<<'*) ;;
       '<'*) INPUT=${1#<} ;;
       *) ARGS+=("$1") ;;
@@ -480,7 +494,7 @@ check_read() {
   local dir=$1 end=$2 prog=$3 a code=0 k
   shift 3
   parse_redirects "$@"
-  ((STDOUT_GONE)) && return 1
+  [[ "$STDOUT_TARGET" == /dev/null ]] && return 1
   local -a inputs=()
   case "$prog" in
     sed)
@@ -515,6 +529,7 @@ check_read() {
   ((code)) || return 1
 
   limited_output "$prog" && return 1
+  ((STDOUT_GONE)) && return 0
 
   # Piped: fine when the next command only counts, hashes or limits the output.
   [ "${WORDS[end]-}" = '|' ] || return 0

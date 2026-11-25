@@ -798,10 +798,28 @@ fn lex(cmd: &str) -> Vec<Token> {
                     continue;
                 }
             }
+            b'>' => {
+                if !has || !w.iter().all(u8::is_ascii_digit) {
+                    flush(&mut w, &mut has, &mut tokens);
+                }
+                w.push(c);
+                i += 1;
+                if s.get(i) == Some(&b'>') {
+                    w.push(b'>');
+                    i += 1;
+                }
+                if s.get(i) == Some(&b'&') {
+                    w.push(b'&');
+                    i += 1;
+                }
+                has = true;
+                flush(&mut w, &mut has, &mut tokens);
+                continue;
+            }
             b'<' => {
                 if s[i..].starts_with(b"<<<") {
-                    w.extend_from_slice(b"<<<");
-                    has = true;
+                    flush(&mut w, &mut has, &mut tokens);
+                    tokens.push(Token::Word("<<<".to_string()));
                     i += 3;
                     continue;
                 } else if s[i..].starts_with(b"<<") {
@@ -825,8 +843,8 @@ fn lex(cmd: &str) -> Vec<Token> {
                     heredocs.push_back(delim);
                     continue;
                 } else {
-                    w.push(c);
-                    has = true;
+                    flush(&mut w, &mut has, &mut tokens);
+                    tokens.push(Token::Word("<".to_string()));
                 }
             }
             b'$' if s.get(i + 1) == Some(&b'(') => {
@@ -1070,19 +1088,22 @@ fn check_search(dir: &str, cwd: &str, piped: bool, argv: &[&str]) -> bool {
 struct Redirects<'a> {
     args: Vec<&'a str>,
     input: &'a str,
-    stdout_gone: bool,
+    stdout_redirected: bool,
+    stdout_to_null: bool,
 }
 
 fn parse_redirects<'a>(words: &[&'a str]) -> Redirects<'a> {
     let mut args = Vec::new();
     let mut input = "";
-    let mut stdout_gone = false;
+    let mut stdout_redirected = false;
+    let mut stdout_to_null = false;
     let mut i = 0;
     while i < words.len() {
         let w = words[i];
         match w {
             ">" | ">>" | "1>" | "1>>" => {
-                stdout_gone = true;
+                stdout_redirected = true;
+                stdout_to_null = words.get(i + 1).copied() == Some("/dev/null");
                 i += 2;
             }
             "2>" | "2>>" | "<<<" => {
@@ -1092,8 +1113,23 @@ fn parse_redirects<'a>(words: &[&'a str]) -> Redirects<'a> {
                 input = words.get(i + 1).copied().unwrap_or("");
                 i += 2;
             }
-            _ if w.starts_with('>') || w.starts_with("1>") => {
-                stdout_gone = true;
+            _ if w.starts_with(">>") => {
+                stdout_redirected = true;
+                stdout_to_null = &w[2..] == "/dev/null";
+                i += 1;
+            }
+            _ if w.starts_with("1>>") => {
+                stdout_redirected = true;
+                stdout_to_null = &w[3..] == "/dev/null";
+                i += 1;
+            }
+            _ if w.starts_with("1>") || w.starts_with('>') => {
+                stdout_redirected = true;
+                let target = w
+                    .strip_prefix("1>")
+                    .or_else(|| w.strip_prefix('>'))
+                    .unwrap_or("");
+                stdout_to_null = target == "/dev/null";
                 i += 1;
             }
             _ if w.starts_with("2>") || w.starts_with("<<<") => {
@@ -1112,7 +1148,8 @@ fn parse_redirects<'a>(words: &[&'a str]) -> Redirects<'a> {
     Redirects {
         args,
         input,
-        stdout_gone,
+        stdout_redirected,
+        stdout_to_null,
     }
 }
 
@@ -1311,7 +1348,7 @@ fn check_read(
     max: usize,
 ) -> bool {
     let redir = parse_redirects(rest);
-    if redir.stdout_gone {
+    if redir.stdout_to_null {
         return false;
     }
 
@@ -1377,6 +1414,9 @@ fn check_read(
     }
     if limited_output(prog, &redir.args, max) {
         return false;
+    }
+    if redir.stdout_redirected {
+        return true;
     }
 
     let Some(next) = next_piped_seg else {

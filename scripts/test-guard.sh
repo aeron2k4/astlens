@@ -132,6 +132,15 @@ cat alias
 cat notes.*
 cat alias.rs
 grep foo notes.md
+cat src/main.rs >/tmp/copy
+cat src/main.rs>/tmp/copy
+cat src/main.rs >>/tmp/copy
+cat src/main.rs 1>>/tmp/copy
+cat src/main.rs >/dev/stdout
+cat src/main.rs > /dev/stdout
+cat src/main.rs >/tmp/copy | wc -l
+cat src/main.rs > /tmp/copy | head -n 50
+cat<src/main.rs>/tmp/copy
 cat -n src/main.rs
 cat README.md src/main.rs
 cat src/*
@@ -187,7 +196,11 @@ cat src/main.rs | sha256sum
 cat src/main.rs | head -n 50
 cat src/main.rs | sed -n 1,50p
 cat src/main.rs > /dev/null
-cat src/main.rs >/tmp/copy
+cat src/main.rs >/dev/null
+cat src/main.rs>/dev/null
+cat src/main.rs 1>>/dev/null
+cat src/main.rs >/dev/null 2>&1
+head -n 50 src/main.rs >/tmp/copy
 cat > src/new.rs
 cat >> src/main.rs
 head src/main.rs
