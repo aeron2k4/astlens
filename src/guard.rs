@@ -864,42 +864,131 @@ fn lex(cmd: &str) -> Vec<Token> {
     tokens
 }
 
-fn command_argv<'a>(seg: &'a [&'a str]) -> (&'a [&'a str], bool) {
+fn skip_wrapper_options(args: &[&str], wrapper: &str) -> Option<usize> {
+    let (flags, values, long_flags, long_values): (&str, &str, &[&str], &[&str]) = match wrapper {
+        "time" => (
+            "apv",
+            "fo",
+            &["--append", "--portability", "--verbose"],
+            &["--format", "--output"],
+        ),
+        "nice" => ("", "n", &[], &["--adjustment"]),
+        "sudo" => (
+            "AbEHknPS",
+            "CghpTurt",
+            &[
+                "--askpass",
+                "--background",
+                "--set-home",
+                "--reset-timestamp",
+                "--non-interactive",
+                "--preserve-env",
+                "--preserve-groups",
+                "--stdin",
+            ],
+            &[
+                "--close-from",
+                "--command-timeout",
+                "--group",
+                "--host",
+                "--prompt",
+                "--role",
+                "--type",
+                "--user",
+            ],
+        ),
+        "command" => ("p", "", &[], &[]),
+        "exec" => ("cl", "a", &[], &[]),
+        "env" => (
+            "i0v",
+            "u",
+            &["--ignore-environment", "--null", "--debug"],
+            &["--unset"],
+        ),
+        "nohup" | "bypass" => ("", "", &[], &[]),
+        _ => return None,
+    };
+    let mut i = 0;
+    while i < args.len() {
+        let arg = args[i];
+        if arg == "--" {
+            return Some(i + 1);
+        }
+        if wrapper == "env" && arg == "-" {
+            i += 1;
+            continue;
+        }
+        if arg == "-" || !arg.starts_with('-') {
+            return Some(i);
+        }
+        if matches!(wrapper, "env" | "time" | "nice" | "sudo" | "nohup")
+            && matches!(arg, "--help" | "--version")
+        {
+            return Some(args.len());
+        }
+        let mut skip = 1;
+        if arg.starts_with("--") {
+            let (name, value) = arg
+                .split_once('=')
+                .map_or((arg, None), |(n, v)| (n, Some(v)));
+            if long_values.contains(&name) {
+                skip += usize::from(value.is_none());
+            } else if !long_flags.contains(&name)
+                || value.is_some() && !(wrapper == "sudo" && name == "--preserve-env")
+            {
+                return None;
+            }
+        } else {
+            for (offset, flag) in arg[1..].char_indices() {
+                if wrapper == "command" && matches!(flag, 'v' | 'V') {
+                    return Some(args.len());
+                }
+                if values.contains(flag) {
+                    skip += usize::from(offset + 2 == arg.len());
+                    break;
+                }
+                if !flags.contains(flag) {
+                    return None;
+                }
+            }
+        }
+        if i + skip > args.len() {
+            return None;
+        }
+        i += skip;
+    }
+    Some(i)
+}
+
+fn command_argv<'a>(seg: &'a [&'a str]) -> (&'a [&'a str], bool, bool) {
     let mut j = 0;
     let mut under_rtk = false;
     while j < seg.len() {
         let w = seg[j];
-        if w == "rtk" {
+        let prog = w.rsplit(['/', '\\']).next().unwrap_or(w);
+        if prog == "rtk" {
             under_rtk = true;
             j += 1;
         } else if w.contains('=')
             || matches!(
                 w,
-                "sudo"
-                    | "command"
-                    | "exec"
-                    | "env"
-                    | "time"
-                    | "nice"
-                    | "nohup"
-                    | "bypass"
-                    | "if"
-                    | "then"
-                    | "else"
-                    | "elif"
-                    | "do"
-                    | "while"
-                    | "until"
-                    | "{"
-                    | "!"
+                "if" | "then" | "else" | "elif" | "do" | "while" | "until" | "{" | "!"
             )
         {
             j += 1;
+        } else if matches!(
+            prog,
+            "command" | "exec" | "env" | "time" | "nice" | "nohup" | "sudo" | "bypass"
+        ) {
+            let Some(skipped) = skip_wrapper_options(&seg[j + 1..], prog) else {
+                return (&seg[j..], under_rtk, true);
+            };
+            j += 1 + skipped;
         } else {
             break;
         }
     }
-    (&seg[j..], under_rtk)
+    (&seg[j..], under_rtk, false)
 }
 
 fn git_grep_argv<'a>(argv: &[&'a str], dir: &str) -> Option<(Vec<&'a str>, String)> {
@@ -1528,7 +1617,10 @@ fn check_read(
     let Some(next) = next_piped_seg else {
         return true;
     };
-    let (next_argv, _) = command_argv(next);
+    let (next_argv, _, unsupported_wrapper) = command_argv(next);
+    if unsupported_wrapper {
+        return true;
+    }
     let Some(&first) = next_argv.first() else {
         return true;
     };
@@ -1592,7 +1684,13 @@ fn check_bash(
         if seg.is_empty() {
             continue;
         }
-        let (argv, under_rtk) = command_argv(seg);
+        let (argv, under_rtk, unsupported_wrapper) = command_argv(seg);
+        if unsupported_wrapper {
+            return Some(format!(
+                "Command wrapper options are not supported by the guard. {}",
+                hints.read_hint
+            ));
+        }
         let Some(&first) = argv.first() else {
             continue;
         };

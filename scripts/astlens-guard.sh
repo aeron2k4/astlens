@@ -539,6 +539,7 @@ check_read() {
     next+=("${WORDS[k]}")
   done
   command_argv "${next[@]}"
+  ((WRAPPER_UNSAFE)) && return 0
   ((${#ARGV[@]})) || return 0
   case "${ARGV[0]##*/}" in
     wc | sha1sum | sha224sum | sha256sum | sha384sum | sha512sum | md5sum | b2sum | shasum | cksum) return 1 ;;
@@ -554,17 +555,93 @@ check_read() {
 # ARGV gets the rest, UNDER_RTK is 1 when rtk was one of the wrappers.
 command_argv() {
   local -a seg=("$@")
-  local j=0
-  UNDER_RTK=0
+  local j=0 w prog
+  UNDER_RTK=0; WRAPPER_UNSAFE=0
   while ((j < ${#seg[@]})); do
-    case "${seg[j]}" in
-      rtk) UNDER_RTK=1; ((j++)) ;;
-      *=* | sudo | command | exec | env | time | nice | nohup | bypass | \
-        if | then | else | elif | do | while | until | '{' | '!') ((j++)) ;;
-      *) break ;;
-    esac
+    w=${seg[j]}
+    prog=${w##*/}
+    if [ "$prog" = rtk ]; then
+      UNDER_RTK=1
+      ((j++))
+    elif [[ "$w" == *=* ]] || case "$w" in if | then | else | elif | do | while | until | '{' | '!') true ;; *) false ;; esac; then
+      ((j++))
+    elif case "$prog" in command | exec | env | time | nice | nohup | sudo | bypass) true ;; *) false ;; esac; then
+      if ! skip_wrapper_options "$prog" "${seg[@]:j+1}"; then
+        WRAPPER_UNSAFE=1
+        break
+      fi
+      ((j += 1 + WRAPPER_SKIP))
+    else
+      break
+    fi
   done
   ARGV=("${seg[@]:j}")
+}
+
+skip_wrapper_options() {
+  local wrapper=$1 a skip name has_value offset flag
+  local flags='' values='' long_flags='' long_values=''
+  shift
+  local -a args=("$@")
+  local i=0
+  case "$wrapper" in
+    time)
+      flags=apv; values=fo
+      long_flags='--append --portability --verbose'
+      long_values='--format --output'
+      ;;
+    nice) values=n; long_values=--adjustment ;;
+    sudo)
+      flags=AbEHknPS; values=CghpTurt
+      long_flags='--askpass --background --set-home --reset-timestamp --non-interactive --preserve-env --preserve-groups --stdin'
+      long_values='--close-from --command-timeout --group --host --prompt --role --type --user'
+      ;;
+    command) flags=p ;;
+    exec) flags=cl; values=a ;;
+    env)
+      flags=i0v; values=u
+      long_flags='--ignore-environment --null --debug'
+      long_values=--unset
+      ;;
+    nohup | bypass) ;;
+    *) return 1 ;;
+  esac
+  while ((i < ${#args[@]})); do
+    a=${args[i]}
+    if [ "$a" = -- ]; then WRAPPER_SKIP=$((i + 1)); return 0; fi
+    if [ "$wrapper" = env ] && [ "$a" = - ]; then ((i++)); continue; fi
+    if [ "$a" = - ] || [[ "$a" != -* ]]; then WRAPPER_SKIP=$i; return 0; fi
+    case "$wrapper" in
+      env | time | nice | sudo | nohup)
+        case "$a" in --help | --version) WRAPPER_SKIP=${#args[@]}; return 0 ;; esac ;;
+    esac
+    skip=1
+    if [[ "$a" == --* ]]; then
+      name=${a%%=*}; has_value=0
+      [[ "$a" == *=* ]] && has_value=1
+      if [[ " $long_values " == *" $name "* ]]; then
+        skip=$((2 - has_value))
+      elif [[ " $long_flags " != *" $name "* ]] ||
+        { ((has_value)) && { [ "$wrapper" != sudo ] || [ "$name" != --preserve-env ]; }; }; then
+        return 1
+      fi
+    else
+      for ((offset = 1; offset < ${#a}; offset++)); do
+        flag=${a:offset:1}
+        if [ "$wrapper" = command ] && [[ "$flag" == [vV] ]]; then
+          WRAPPER_SKIP=${#args[@]}; return 0
+        fi
+        if [[ "$values" == *"$flag"* ]]; then
+          ((offset + 1 == ${#a})) && skip=2
+          break
+        fi
+        [[ "$flags" == *"$flag"* ]] || return 1
+      done
+    fi
+    ((i + skip <= ${#args[@]})) || return 1
+    ((i += skip))
+  done
+  WRAPPER_SKIP=$i
 }
 
 git_grep() {
@@ -659,6 +736,7 @@ check_bash() {
       command_argv "${seg[@]}"
       local -a argv=("${ARGV[@]}")
       local under_rtk=$UNDER_RTK
+      ((WRAPPER_UNSAFE)) && deny "Command wrapper options are not supported by the guard. $READ_HINT"
       case "${argv[0]##*/}" in
         cd)
           cd_target "${argv[@]}" && dir=$CD_TARGET

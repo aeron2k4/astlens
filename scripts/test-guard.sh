@@ -129,6 +129,23 @@ git -C . grep .
 git --no-pager -C . grep .
 rtk grep foo src
 cat src/main.rs
+time -p cat src/main.rs
+time -pv cat src/main.rs
+/usr/bin/time -f '%E' -o timing.txt cat src/main.rs
+nice -n 5 cat src/main.rs
+nice --adjustment=5 cat src/main.rs
+sudo -u root cat src/main.rs
+sudo -nu root cat src/main.rs
+sudo -D src cat main.rs
+command -p cat src/main.rs
+exec -a reader cat src/main.rs
+env -i cat src/main.rs
+env - cat src/main.rs
+env -u LANG cat src/main.rs
+env --unset=LANG cat src/main.rs
+env -C src cat main.rs
+env -S 'cat src/main.rs'
+time -p env -i nice -n5 cat src/main.rs
 cat notes.md
 cat alias
 cat notes.*
@@ -198,6 +215,13 @@ cat src
 cat README*
 cat nosuch.rs
 cat src/main.rs | wc -l
+cat src/main.rs | time -p wc -l
+time -p cat src/main.rs | head -n 50
+env -i cargo test
+env --version
+time -p cat README.md
+command -pv cat src/main.rs
+nice -n 5 head -n 50 src/main.rs
 cat src/main.rs | rtk wc -l
 cat src/main.rs | sha256sum
 cat src/main.rs | head -n 50
