@@ -422,10 +422,7 @@ fn check_request(req: &HookRequest<'_>, hints: &Hints) -> Option<String> {
     match req.tool {
         "Read" => {
             let file = req.file?;
-            if !has_code_ext(file) {
-                return None;
-            }
-            if !inside_workspace(&absolute(file, req.cwd), req.cwd) || small(req.limit, max) {
+            if !is_code_path(file, req.cwd, req.cwd) || small(req.limit, max) {
                 return None;
             }
             Some(format!(
@@ -437,12 +434,12 @@ fn check_request(req: &HookRequest<'_>, hints: &Hints) -> Option<String> {
         "Grep" => {
             let target = req.path.filter(|s| !s.is_empty()).unwrap_or(".");
             let abs = absolute(target, req.cwd);
-            if !inside_workspace(&abs, req.cwd) {
+            if !is_workspace_path(&abs, req.cwd) {
                 return None;
             }
             let p = Path::new(&abs);
             if p.is_file() {
-                if !has_code_ext(&abs) {
+                if !is_code_path(target, req.cwd, req.cwd) {
                     return None;
                 }
             } else if let Some(t) = req.kind.filter(|s| !s.is_empty()) {
@@ -603,35 +600,42 @@ fn inside_workspace(abs: &str, cwd: &str) -> bool {
 
 fn path_has_code(raw: &str, dir: &str, cwd: &str) -> bool {
     let abs = absolute(raw, dir);
-    if !inside_workspace(&abs, cwd) {
-        return false;
-    }
     if raw.contains(['*', '?', '[']) {
         let base = raw.rsplit(['/', '\\']).next().unwrap_or(raw);
-        return has_code_ext(raw) || !base.contains('.');
+        return is_workspace_path(&abs, cwd) && (has_code_ext(raw) || !base.contains('.'))
+            || glob_matches_code_file(&abs, cwd);
     }
-    let p = Path::new(&abs);
-    if p.is_dir() {
-        return true;
-    }
-    p.is_file() && has_code_ext(&abs)
+    Path::new(&abs).is_dir() && is_workspace_path(&abs, cwd) || is_code_file(raw, dir, cwd)
 }
 
 fn is_code_file(raw: &str, dir: &str, cwd: &str) -> bool {
     let abs = absolute(raw, dir);
-    if !inside_workspace(&abs, cwd) {
-        return false;
-    }
     if raw.contains(['*', '?', '[', '{']) {
-        if has_code_ext(raw) || is_code_glob(raw) {
+        if inside_workspace(&abs, cwd) && (has_code_ext(raw) || is_code_glob(raw)) {
             return true;
         }
-        return glob_matches_code_file(&abs);
+        return glob_matches_code_file(&abs, cwd);
     }
-    Path::new(&abs).is_file() && has_code_ext(&abs)
+    Path::new(&abs).is_file() && is_code_path(raw, dir, cwd)
 }
 
-fn glob_matches_code_file(abs: &str) -> bool {
+fn is_code_path(raw: &str, dir: &str, cwd: &str) -> bool {
+    let abs = absolute(raw, dir);
+    inside_workspace(&abs, cwd) && has_code_ext(&abs)
+        || canonical_workspace_path(&abs, cwd).is_some_and(|path| has_code_ext(&path))
+}
+
+fn is_workspace_path(abs: &str, cwd: &str) -> bool {
+    inside_workspace(abs, cwd) || canonical_workspace_path(abs, cwd).is_some()
+}
+
+fn canonical_workspace_path(abs: &str, cwd: &str) -> Option<String> {
+    let path = normalize(&fs::canonicalize(abs).ok()?.to_string_lossy());
+    let root = normalize(&fs::canonicalize(cwd).ok()?.to_string_lossy());
+    inside_workspace(&path, &root).then_some(path)
+}
+
+fn glob_matches_code_file(abs: &str, cwd: &str) -> bool {
     let mut parts = abs.split('/').filter(|s| !s.is_empty());
     let mut roots = vec![if abs.starts_with('/') {
         PathBuf::from("/")
@@ -677,7 +681,7 @@ fn glob_matches_code_file(abs: &str) -> bool {
     }
     roots
         .into_iter()
-        .any(|p| p.is_file() && p.to_str().is_some_and(has_code_ext))
+        .any(|p| p.is_file() && p.to_str().is_some_and(|path| is_code_path(path, cwd, cwd)))
 }
 
 fn wildcard_match(pat: &[u8], text: &[u8]) -> bool {
@@ -1035,7 +1039,7 @@ fn check_search(dir: &str, cwd: &str, piped: bool, argv: &[&str]) -> bool {
 
     if !paths
         .iter()
-        .any(|f| inside_workspace(&absolute(f, dir), cwd))
+        .any(|f| is_workspace_path(&absolute(f, dir), cwd))
     {
         return false;
     }

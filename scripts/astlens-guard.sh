@@ -41,12 +41,10 @@ CODE_EXT="\\.($EXTS)\$"
 CODE_GLOB="(^|[.,{])($EXTS)([,}]|\$)"
 CODE_TYPES='^(rust|py|python|js|jsx|ts|tsx|typescript|go|c|cpp|java|cs|csharp|gdscript|ruby)$'
 
-# Quick checks that spare most commands the word-by-word parse: a search or
-# reader program as a whole word and, for readers, a source path or a glob.
+# Quick checks that spare most commands the word-by-word parse.
 BOUND='[^[:alnum:]_.-]'
 SEARCH_CMD="(^|$BOUND)(grep|egrep|fgrep|ugrep|rg)($BOUND|\$)"
 READ_CMD="(^|$BOUND)(cat|tac|nl|more|less|most|bat|batcat|head|tail|sed|awk|gawk|mawk|nawk|read|smart)($BOUND|\$)"
-CODE_HINT="[*?[{]|\\.($EXTS)($BOUND|\$)"
 
 MAX_LINES=${ASTLENS_MAX_READ_LINES:-300}
 [[ "$MAX_LINES" =~ ^[0-9]+$ ]] || MAX_LINES=300
@@ -98,20 +96,54 @@ inside_workspace() {
   case "$1/" in "$cwd"/*) return 0 ;; *) return 1 ;; esac
 }
 
+# Resolve existing symlinks without depending on GNU-only readlink options.
+real_path() {
+  local path=$1 parent base target i
+  for ((i = 0; i < 40; i++)); do
+    parent=${path%/*}
+    base=${path##*/}
+    [ -n "$parent" ] || parent=/
+    parent=$(cd -P -- "$parent" 2>/dev/null && pwd -P) || return 1
+    path=${parent%/}/$base
+    if [ ! -L "$path" ]; then
+      [ -e "$path" ] || return 1
+      printf '%s' "$path"
+      return 0
+    fi
+    target=$(readlink "$path") || return 1
+    case "$target" in
+      /*) path=$target ;;
+      *) path=$parent/$target ;;
+    esac
+  done
+  return 1
+}
+
+inside_real_workspace() {
+  local path root
+  path=$(real_path "$1") && root=$(real_path "$cwd") || return 1
+  [ "$root" = / ] && [[ "$path" == /* ]] && return 0
+  case "$path/" in "$root"/*) return 0 ;; *) return 1 ;; esac
+}
+
+is_workspace_path() {
+  inside_workspace "$1" || inside_real_workspace "$1"
+}
+
 # 0 when searching path $1 (relative to dir $2) may touch source files.
 path_has_code() {
   local abs
   abs=$(absolute "$1" "$2")
-  inside_workspace "$abs" || return 1
   if [[ "$1" == *[*?[]* ]]; then
     # Unexpanded glob: code if it names a source extension or none at all.
-    [[ "$1" =~ $CODE_EXT || ! "${1##*/}" =~ \. ]]
+    is_workspace_path "$abs" && [[ "$1" =~ $CODE_EXT || ! "${1##*/}" =~ \. ]] && return 0
+    is_code_file "$1" "$2"
     return
   fi
-  if [ -d "$abs" ]; then
+  if [ -d "$abs" ] && is_workspace_path "$abs"; then
     return 0
   fi
-  [ -f "$abs" ] && [[ "$abs" =~ $CODE_EXT ]]
+  is_code_file "$1" "$2"
 }
 
 # Split a shell command into words. Unquoted | becomes the word "|", other
@@ -290,7 +322,7 @@ check_search() {
   # Searches entirely outside the workspace are never blocked.
   local f inside=0
   for f in "${paths[@]}"; do
-    inside_workspace "$(absolute "$f" "$dir")" && inside=1
+    is_workspace_path "$(absolute "$f" "$dir")" && inside=1
   done
   ((inside)) || return 1
 
@@ -318,15 +350,22 @@ check_search() {
 is_code_file() {
   local abs m
   abs=$(absolute "$1" "$2")
-  inside_workspace "$abs" || return 1
   if [[ "$1" == *[*?[{]* ]]; then
-    [[ "$1" =~ $CODE_EXT || "$1" =~ $CODE_GLOB ]] && return 0
+    inside_workspace "$abs" && [[ "$1" =~ $CODE_EXT || "$1" =~ $CODE_GLOB ]] && return 0
     while IFS= read -r m; do
-      [[ "$m" =~ $CODE_EXT ]] && [ -f "$m" ] && return 0
+      [ -f "$m" ] && is_code_path "$m" "$2" && return 0
     done < <(compgen -G "$abs")
     return 1
   fi
-  [ -f "$abs" ] && [[ "$abs" =~ $CODE_EXT ]]
+  [ -f "$abs" ] && is_code_path "$1" "$2"
+}
+
+is_code_path() {
+  local abs real
+  abs=$(absolute "$1" "$2")
+  inside_workspace "$abs" && [[ "$abs" =~ $CODE_EXT ]] && return 0
+  real=$(real_path "$abs") || return 1
+  inside_real_workspace "$real" && [[ "$real" =~ $CODE_EXT ]]
 }
 
 # Split redirections off an argument list: ARGS gets the rest, INPUT the file
@@ -514,7 +553,7 @@ command_argv() {
 }
 
 check_bash() {
-  [[ "$cmd" =~ $SEARCH_CMD ]] || { [[ "$cmd" =~ $READ_CMD ]] && [[ "$cmd" =~ $CODE_HINT ]]; } || exit 0
+  [[ "$cmd" =~ $SEARCH_CMD || "$cmd" =~ $READ_CMD ]] || exit 0
   lex "$cmd"
 
   local dir=$cwd piped=0 i=0 n=${#WORDS[@]}
@@ -560,17 +599,16 @@ check_bash() {
 
 case "$tool" in
   Read)
-    [[ "$file" =~ $CODE_EXT ]] || exit 0
-    inside_workspace "$(absolute "$file" "$cwd")" || exit 0
+    is_code_path "$file" "$cwd" || exit 0
     # Without a limit, Read returns up to 2000 lines even from an offset.
     small "$limit" && exit 0
     deny "Whole-file Read of $file (or a Read without a limit of at most $MAX_LINES lines) is blocked. $READ_HINT For a smaller Edit, Read only the needed lines with offset and a limit of at most $MAX_LINES."
     ;;
   Grep)
     abs=$(absolute "${path:-.}" "$cwd")
-    inside_workspace "$abs" || exit 0
+    is_workspace_path "$abs" || exit 0
     if [ -f "$abs" ]; then
-      [[ "$abs" =~ $CODE_EXT ]] || exit 0
+      is_code_path "${path:-.}" "$cwd" || exit 0
     elif [ -n "$type" ]; then
       [[ "$type" =~ $CODE_TYPES ]] || exit 0
     elif [ -n "$glob" ]; then

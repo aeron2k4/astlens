@@ -13,9 +13,17 @@ else
   BIN="$REPO_DIR/target/debug/astlens"
 fi
 WS=$(mktemp -d)
-trap 'rm -rf "$WS"' EXIT
+OUTSIDE=$(mktemp -d)
+trap 'rm -rf "$WS" "$OUTSIDE"' EXIT
 mkdir -p "$WS/src"
 echo 'fn main() {}' >"$WS/src/main.rs"
+ln -s src/main.rs "$WS/notes.md"
+ln -s notes.md "$WS/alias"
+ln -s "$WS/src/main.rs" "$OUTSIDE/notes.md"
+ln -s "$WS" "$OUTSIDE/project"
+echo 'fn dependency() {}' >"$OUTSIDE/dependency.rs"
+ln -s "$OUTSIDE/dependency.rs" "$WS/dependency.md"
+ln -s README.md "$WS/alias.rs"
 echo 'fn a() {}' >"$WS/src/a.rs"
 echo 'fn b() {}' >"$WS/src/tiếng việt.rs"
 echo '# hi' >"$WS/README.md"
@@ -73,6 +81,16 @@ expect() {
 bash_cmd() { expect "$1" Bash "$(jq -n --arg c "$2" '{command: $c}')" "$2"; }
 
 expect deny Read "{\"file_path\": \"$WS/src/main.rs\"}" 'Read whole file'
+expect deny Read "{\"file_path\": \"$WS/notes.md\"}" 'Read source through symlink'
+expect deny Read "{\"file_path\": \"$WS/alias\"}" 'Read source through symlink chain without extension'
+expect deny Read "{\"file_path\": \"$OUTSIDE/notes.md\"}" 'Read outside alias of workspace source'
+expect deny Read "{\"file_path\": \"$OUTSIDE/project/src/main.rs\"}" 'Read through workspace directory alias'
+expect allow Read "{\"file_path\": \"$WS/notes.md\", \"limit\": 50}" 'Read limited through source alias'
+expect allow Read "{\"file_path\": \"$WS/dependency.md\"}" 'Read alias of outside source'
+expect deny Read "{\"file_path\": \"$WS/alias.rs\"}" 'Read source extension alias of non-code file'
+expect deny Grep '{"pattern": "x", "path": "notes.md"}' 'Grep source alias'
+bash_cmd deny "cat $OUTSIDE/notes.md"
+bash_cmd deny "grep foo $OUTSIDE/notes.md"
 expect allow Read "{\"file_path\": \"$WS/src/main.rs\", \"limit\": 50}" 'Read limited'
 expect allow Read '{"file_path": "/etc/x.rs"}' 'Read outside workspace'
 expect deny Read "{\"file_path\": \"$WS/src/UP.RS\"}" 'Read upper-case extension'
@@ -109,6 +127,11 @@ while IFS= read -r c; do [ -n "$c" ] && bash_cmd deny "$c"; done <<'CASES'
 grep -rn foo src
 rtk grep foo src
 cat src/main.rs
+cat notes.md
+cat alias
+cat notes.*
+cat alias.rs
+grep foo notes.md
 cat -n src/main.rs
 cat README.md src/main.rs
 cat src/*
@@ -152,6 +175,8 @@ CASES
 
 while IFS= read -r c; do [ -n "$c" ] && bash_cmd allow "$c"; done <<'CASES'
 cat README.md
+cat dependency.md
+head -n 50 notes.md
 cat /etc/hostname
 cat src
 cat README*
